@@ -1,0 +1,22 @@
+{
+  "name": "discipline-pack",
+  "displayName": "Discipline Pack",
+  "version": "0.3.0",
+  "description": "Guardrails for agentic coding: gated workflow commands (orient / arch-check / implement / orchestrate / stuck) and enforcement hooks (protected branches, definition-of-done gate, format feedback, KB-first nudge).",
+  "author": {
+    "name": "cotique",
+    "url": "https://github.com/cotique"
+  },
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "guardrails",
+    "hooks",
+    "definition-of-done",
+    "architecture-gate"
+  ],
+  "commands": [
+    "./commands/"
+  ],
+  "hooks": "./hooks/hooks.json"
+}

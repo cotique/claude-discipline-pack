@@ -1,0 +1,19 @@
+{
+  "name": "cotique-plugins",
+  "owner": {
+    "name": "cotique",
+    "url": "https://github.com/cotique"
+  },
+  "description": "Plugins by cotique",
+  "plugins": [
+    {
+      "name": "discipline-pack",
+      "source": "./",
+      "description": "Gated workflow commands and enforcement hooks for agentic coding.",
+      "version": "0.3.0",
+      "author": {
+        "name": "cotique"
+      }
+    }
+  ]
+}
