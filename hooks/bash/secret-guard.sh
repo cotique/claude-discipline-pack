@@ -26,7 +26,9 @@ DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/n
 export DISC_SESSION_ID
 
 config=$(disc_config_path)
-if [ -f "$config" ] && [ "$(jq -r '.secrets.enabled // "true"' "$config" 2>/dev/null)" = "false" ]; then
+# `// "true"` would be wrong here: jq's alternative operator treats `false` the
+# same as absent, so "enabled": false read as enabled. Compare explicitly.
+if [ -f "$config" ] && [ "$(jq -r 'if .secrets.enabled == false then "off" else "on" end' "$config" 2>/dev/null)" = "off" ]; then
   exit 0
 fi
 
@@ -56,7 +58,7 @@ fi
 is_placeholder() {  # $1 = matched sample
   while IFS= read -r ig; do
     [ -z "$ig" ] && continue
-    printf '%s' "$1" | grep -Eqi "$ig" && return 0
+    printf '%s' "$1" | grep -Eqi -e "$ig" && return 0
   done < "$ignore_file"
   return 1
 }
@@ -66,7 +68,7 @@ check() {  # $1 = label, $2 = pattern
   while IFS= read -r sample; do
     [ -z "$sample" ] && continue
     is_placeholder "$sample" || { case "$hits" in *"$1"*) ;; *) hits="${hits}${1}, ";; esac; return 0; }
-  done < <(printf '%s' "$text" | grep -Eoi "$2" 2>/dev/null)
+  done < <(printf '%s' "$text" | grep -Eoi -e "$2" 2>/dev/null)
 }
 
 check 'private key block'       '-----BEGIN [A-Z ]*PRIVATE KEY-----'
@@ -89,7 +91,7 @@ while IFS= read -r sample; do
   [ -z "$val" ] && continue
   if ! printf '%s' "$val" | grep -q '[0-9]' && [ ${#val} -lt 16 ]; then continue; fi
   is_placeholder "$val" || { case "$hits" in *'credential in prose'*) ;; *) hits="${hits}credential in prose, ";; esac; }
-done < <(printf '%s' "$text" | grep -Eoi "$narrative" 2>/dev/null)
+done < <(printf '%s' "$text" | grep -Eoi -e "$narrative" 2>/dev/null)
 
 if [ -f "$config" ]; then
   n=0

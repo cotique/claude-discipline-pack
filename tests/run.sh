@@ -191,7 +191,15 @@ assert 'dod: shadow reports precondition' 0 'SHADOW'
 # jq missing must block, not silently pass: without it every config read fails
 # soft and "tool absent" becomes indistinguishable from "nothing configured".
 set_config "$pre" '{"dod":{"fileGlobs":["*.ts"],"checks":[{"name":"t","command":"true"}]}}'
-OUT=$(printf '%s' '{"stop_hook_active":false}' | PATH=/nonexistent-dir CLAUDE_PROJECT_DIR="$pre" bash "$hooks/dod-gate.sh" 2>&1); RC=$?
+# A PATH with nothing on it hides bash too, so build one that has what the hook
+# needs and deliberately lacks jq.
+jqless=$(mktemp -d)
+for t in cat date sed grep basename tr wc git mkdir rm; do
+  p=$(command -v "$t") && ln -sf "$p" "$jqless/$t"
+done
+bash_bin=$(command -v bash)
+OUT=$(printf '%s' '{"stop_hook_active":false}' | PATH="$jqless" CLAUDE_PROJECT_DIR="$pre" "$bash_bin" "$hooks/dod-gate.sh" 2>&1); RC=$?
+rm -rf "$jqless"
 if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'not a pass'; then
   echo 'PASS  dod: jq missing blocks and says it is not a pass'
 else echo "FAIL  dod: jq missing did not block (exit $RC): $OUT"; failed=$((failed+1)); fi
