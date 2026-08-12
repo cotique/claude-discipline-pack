@@ -1,0 +1,71 @@
+{
+  "$comment": "Copy to <project>/.claude/discipline.json and adjust. Every section is optional — hooks no-op when their section is missing.",
+
+  "$commentMode": "enforce (default) = blocking hooks block. shadow = they log what they WOULD have blocked and allow it — one bootstrap window to measure a gate's value before it can annoy anyone. Shadow is meant to expire: `check` warns the longer a repo sits in it.",
+  "mode": "enforce",
+
+  "$commentEvents": "One JSONL line per hook firing, so adoption, intercepts, override rate and gate cost are queries instead of transcript archaeology. On unless explicitly disabled.",
+  "events": { "enabled": true, "path": ".claude/discipline-events.jsonl" },
+
+  "protectedBranches": ["main", "master", "develop", "release/*"],
+
+  "$commentBlockAllPush": "Set blockAllPush to true to make EVERY git push a human action, not just pushes to protected branches. Rationale: undoing a push on a shared branch costs a force-push and other people's time, so the asymmetry — not the branch name — is what matters. Off by default.",
+  "blockAllPush": false,
+
+  "kb": {
+    "$comment": "kb-first-reminder: nudge Claude to query your knowledge base before reading code when the prompt mentions a project term. toolName is whatever your KB is exposed as — any MCP server that answers search/get over your docs: a wiki or Confluence bridge, a notes/Notion bridge, a vector-store server, or a plain local-markdown server. The pack does not care which; it only cares that one exists and gets asked first.",
+    "toolName": "<your-kb-mcp-server>",
+    "projectTerms": ["billing", "checkout", "inventory", "my-service-name"],
+    "$commentPattern": "Optional: triggerPattern overrides the built-in English research-question regex — set it if your prompts are in another language.",
+    "triggerPattern": "\\b(how|why|what|explain|architecture|flow)\\b|\\?"
+  },
+
+  "$commentSecrets": "secret-guard runs with sane defaults as soon as it is registered — registering it IS the opt-in, because the cost of missing a leaked key is asymmetric. extraPatterns adds your own shapes; ignorePatterns silences a placeholder the detector misreads. Set enabled=false to turn it off entirely.",
+  "secrets": {
+    "extraPatterns": ["ACME_[A-Z0-9]{12}"],
+    "ignorePatterns": ["SAMPLE_TOKEN_[0-9]+"]
+  },
+
+  "envelope": {
+    "$comment": "session-envelope (SessionStart hook): the operating state re-grounded at session start and after compaction. List every repo the work spans; notes are standing constraints that must survive summarization.",
+    "repos": [".", "../sibling-service"],
+    "notes": ["never switch branches in the sibling repo", "deliverable is a patch, not a PR"]
+  },
+
+  "codeGraph": {
+    "$comment": "Code-structure graph used by /orient and /arch-check. Declare it in whatever form it exists — an MCP server (toolName), a skill (skill), or a command (command); any one satisfies the gate. `check` enforces it by codebase size: warning above recommendAtLoc, error above requireAtLoc (defaults 50k / 300k). See docs/adoption-guide.md.",
+    "toolName": "<your-code-graph-mcp-server>",
+    "$commentForms": "Declare whichever form you have, and name the capability rather than the vendor: toolName (an MCP server), skill (\"code-graph\"), or command (\"<your-graph-cli> query {symbol}\").",
+    "$commentOptions": "Anything that answers dependency queries works: a dependency/call-graph builder, an LSIF or SCIP index, a code-search server, dependency-cruiser or a ts-morph/Roslyn-derived graph, or a graph DB loaded from any of those.",
+    "scope": "repo",
+    "recommendAtLoc": 50000,
+    "requireAtLoc": 300000,
+    "$commentSnapshot": "A graph is built from a commit and ages from then on. Point snapshot.path at the built graph and name the field that records its build commit; `check` compares it to HEAD and warns past staleAfterCommits. refresh is what to run to rebuild — shown in the warning so nobody has to remember it.",
+    "snapshot": {
+      "path": "graph-out/graph.json",
+      "commitField": "built_at_commit",
+      "staleAfterCommits": 25,
+      "refresh": "<your-graph-tool> update ."
+    }
+  },
+
+  "dod": {
+    "$comment": "dod-gate (Stop hook): if uncommitted changes match fileGlobs, all checks must pass before the session may end.",
+    "fileGlobs": ["*.ts"],
+    "$commentPreconditions": "Checked before any check runs. A stopped Docker daemon is not a verdict on your changes — reported as a check failure it sends the reader hunting through diffs for a fault that is not there, and gates that do that get switched off. It still blocks (unverified work is unverified) but it blocks saying what to start. remedy is printed verbatim.",
+    "preconditions": [
+      { "name": "docker daemon", "command": "docker info", "remedy": "Start Docker Desktop, then retry." }
+    ],
+    "checks": [
+      { "name": "typecheck", "command": "npx tsc --noEmit" },
+      { "name": "tests", "command": "npx vitest run" }
+    ],
+    "$commentAlt": ".NET equivalent: fileGlobs [\"*.cs\"], checks: dotnet build --nologo -warnaserror; dotnet test --nologo --no-build"
+  },
+
+  "format": {
+    "$comment": "format-postcheck (PostToolUse): glob -> check command, {file} is replaced with the edited file path.",
+    "*.ts": "npx prettier --check \"{file}\"",
+    "*.cs": "dotnet format --verify-no-changes --include \"{file}\""
+  }
+}

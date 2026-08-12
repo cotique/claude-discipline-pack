@@ -1,0 +1,91 @@
+{
+  "$comment": "Merge into <project>/.claude/settings.json (Linux/macOS/WSL). Paths assume hooks were copied to <project>/.claude/hooks/.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-protected-branch.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/secret-guard.sh\"",
+            "timeout": 15
+          }
+        ],
+        "$comment": "secret-guard blocks credential material heading into a file or a command. It also runs on UserPromptSubmit, where it only warns: once a human has pasted a password the transcript already has it, and the useful action is rotating it."
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/format-postcheck.sh\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/kb-first-reminder.sh\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/secret-guard.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/dod-gate.sh\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "$comment": "`compact` is included deliberately: after a compaction is exactly when the operating state has been dropped while the conclusions were kept. If your agent runtime does not expose that source the matcher simply never fires on it — costs nothing, and the event log will show whether it does.",
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-envelope.sh\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-envelope.sh\"",
+            "timeout": 20
+          }
+        ],
+        "$comment": "Same asset on PreCompact: it persists the envelope and counts the compaction so the next SessionStart can hand it back. Compaction cannot be cancelled — the point is to make it non-lossy, not to prevent it."
+      }
+    ]
+  }
+}
