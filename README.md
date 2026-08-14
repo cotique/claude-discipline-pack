@@ -41,7 +41,11 @@ The pack attacks each one with a *structural* control, not a polite prompt:
 **Why hooks and not instructions.** A review of three months of real agent
 sessions found that advisory controls reliably lose: a rule delivered as
 context gets discounted by its own hedging, and a non-blocking hook fires
-*after* the decision it was meant to influence. The same review found every
+*after* the decision it was meant to influence. A later measurement put a number
+on it: in one setup, five hooks fired roughly three and a half thousand times
+over six weeks and **stopped nothing, not once** — four of them being advisory by
+construction. Firing is not enforcing, and counting firings is how a control that
+does nothing looks busy. The same review found every
 verification failure listed above, including one that reached production
 through checks that were all green. Everything in this pack that matters is
 therefore either a hard exit code or a report structure with a slot that is
