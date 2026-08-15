@@ -54,6 +54,14 @@ on_main=$(new_repo main); set_config "$on_main" "$base_cfg"
 run_hook block-protected-branch.sh '{"tool_input":{"command":"git commit -m x"}}' "$on_main"
 assert 'block: commit on main' 2
 
+# A commit message is not a command. Measured in the field: the only intercept in
+# a whole corpus was this false positive.
+bp 'git commit -m "push main fix"';        assert 'block: "push" inside a commit message is not a push' 0
+bp 'git commit -m "block push to main"';   assert 'block: "main" inside a message is not a target' 0
+bp 'git commit -m "branch -D main is bad"'; assert 'block: "branch -D main" inside a message' 0
+bp 'git -C /other push origin master';     assert 'block: git -C elsewhere push still caught' 2
+bp 'git -c user.name=x push origin main';  assert 'block: -c option before subcommand still parsed' 2
+
 set_config "$feat" '{"protectedBranches":["main"],"blockAllPush":true}'
 bp 'git push origin feature/test'; assert 'block: blockAllPush stops feature push' 2
 bp 'git commit -m x';             assert 'block: blockAllPush allows commit' 0

@@ -52,17 +52,39 @@ block() {
   exit 2
 }
 
+# A commit message is not a command. Matching the raw string made
+# `git commit -m "push main fix"` read as a push to main — a false intercept, and
+# a gate that fires on legitimate work is how gates get switched off. Strip
+# quoted segments, then decide from the actual git subcommand.
+scan=$(printf '%s' "$cmd" | sed -E 's/"[^"]*"/ /g' | sed -E "s/'[^']*'/ /g")
+
+git_subcommand() {
+  local seen=0 skip=0 t
+  for t in $scan; do
+    if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+    if [ "$seen" -eq 0 ]; then [ "$t" = "git" ] && seen=1; continue; fi
+    case "$t" in
+      -C|-c|--git-dir|--work-tree|--namespace) skip=1 ;;
+      -*) ;;
+      *) printf '%s' "$t"; return 0 ;;
+    esac
+  done
+}
+sub=$(git_subcommand)
+[ -z "$sub" ] && exit 0
+
 current=$(git -C "$proj" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 
 # 1. History-modifying commands while ON a protected branch.
 if [ -n "$current" ] && is_protected "$current"; then
-  if printf '%s' "$cmd" | grep -Eq '\bgit\b[^|;&]*\b(commit|merge|rebase|cherry-pick|revert)\b|\bgit\b[^|;&]*\breset\b[^|;&]*--hard'; then
+  if printf ' %s ' "commit merge rebase cherry-pick revert" | grep -q " $sub " ||
+     { [ "$sub" = "reset" ] && printf '%s' "$scan" | grep -q -- '--hard'; }; then
     block "current branch '$current' is protected — refusing to modify it directly"
   fi
 fi
 
 # 2. git push targeting a protected branch (refspecs, deletes, --force).
-if printf '%s' "$cmd" | grep -Eq '\bgit\b[^|;&]*\bpush\b'; then
+if [ "$sub" = "push" ]; then
   # blockAllPush: any push is a human decision. Undoing a push on a shared
   # branch costs a force-push and other people's time — the asymmetry, not the
   # branch name, is the reason this option exists.
@@ -78,11 +100,11 @@ if printf '%s' "$cmd" | grep -Eq '\bgit\b[^|;&]*\bpush\b'; then
       block "push targets protected branch '$dst'"
     fi
     # 'git push origin :branch' / '--delete branch' — dst is empty, src is the victim
-    if [ "${tok#:}" != "$tok" ] || printf '%s' "$cmd" | grep -q -- '--delete'; then
+    if [ "${tok#:}" != "$tok" ] || printf '%s' "$scan" | grep -q -- '--delete'; then
       src="${tok%%:*}"; src="${src#:}"
       [ -n "$src" ] && is_protected "$src" && block "push would delete protected branch '$src'"
     fi
-  done < <(printf '%s' "$cmd" | tr ' ' '\n' | grep -vE '^-|^$|^git$|^push$' | tail -n +2)
+  done < <(printf '%s' "$scan" | tr ' ' '\n' | grep -vE '^-|^$|^git$|^push$' | tail -n +2)
 
   # Bare 'git push [--force]' pushes the current branch.
   if [ -n "$current" ] && is_protected "$current"; then
@@ -91,7 +113,7 @@ if printf '%s' "$cmd" | grep -Eq '\bgit\b[^|;&]*\bpush\b'; then
 fi
 
 # 3. Deleting a protected branch locally.
-if printf '%s' "$cmd" | grep -Eq '\bgit\b[^|;&]*\bbranch\b[^|;&]*(-D|-d|--delete)'; then
+if [ "$sub" = "branch" ] && printf '%s' "$scan" | grep -Eq '(^| )(-D|-d|--delete)( |$)'; then
   while IFS= read -r tok; do
     [ -z "$tok" ] && continue
     is_protected "$tok" && block "deleting protected branch '$tok'"

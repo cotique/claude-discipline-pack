@@ -57,6 +57,15 @@ $onMain = New-TestRepo 'main'
 Set-Config $onMain $baseCfg
 Assert 'block: commit on main' (Invoke-Hook 'block-protected-branch.ps1' '{"tool_input":{"command":"git commit -m x"}}' $onMain) 2
 
+# A commit message is not a command. Measured in the field: the only intercept in
+# a whole corpus was this false positive, and a gate that fires on legitimate work
+# is how gates get switched off.
+Assert 'block: "push" inside a commit message is not a push' (BP 'git commit -m \"push main fix\"') 0
+Assert 'block: "main" inside a message is not a target'      (BP 'git commit -m \"block push to main\"') 0
+Assert 'block: "branch -D main" inside a message'            (BP 'git commit -m \"branch -D main is bad\"') 0
+Assert 'block: git -C elsewhere push still caught'           (BP 'git -C /other push origin master') 2
+Assert 'block: -c option before subcommand still parsed'     (BP 'git -c user.name=x push origin main') 2
+
 Set-Config $feat '{"protectedBranches":["main"],"blockAllPush":true}'
 Assert 'block: blockAllPush stops feature push' (BP 'git push origin feature/test') 2
 Assert 'block: blockAllPush allows commit'      (BP 'git commit -m x') 0

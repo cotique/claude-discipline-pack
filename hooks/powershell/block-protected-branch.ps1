@@ -43,29 +43,52 @@ function Block([string]$reason) {
     exit 2
 }
 
+# A commit message is not a command. Matching the raw string made
+# `git commit -m "push main fix"` read as a push to main — a false intercept, and
+# a gate that fires on legitimate work is how gates get switched off. Strip
+# quoted segments, then decide from the actual git subcommand rather than from
+# any word that happens to appear.
+$scan = ($cmd -replace '"[^"]*"', ' ') -replace "'[^']*'", ' '
+
+function Get-GitSubcommand([string]$text) {
+    $tokens = ($text -split '\s+') | Where-Object { $_ }
+    $i = [Array]::IndexOf($tokens, 'git')
+    if ($i -lt 0) { return $null }
+    for ($j = $i + 1; $j -lt $tokens.Count; $j++) {
+        $t = $tokens[$j]
+        # global options that carry a value, and plain flags, precede the subcommand
+        if ($t -in @('-C', '-c', '--git-dir', '--work-tree', '--namespace')) { $j++; continue }
+        if ($t.StartsWith('-')) { continue }
+        return $t
+    }
+    return $null
+}
+$sub = Get-GitSubcommand $scan
+if (-not $sub) { exit 0 }
+
 $current = git -C $proj rev-parse --abbrev-ref HEAD 2>$null
 
 # 1. History-modifying commands while ON a protected branch.
 if ($current -and (Test-Protected $current)) {
-    if ($cmd -match '\bgit\b[^|;&]*\b(commit|merge|rebase|cherry-pick|revert)\b' -or
-        $cmd -match '\bgit\b[^|;&]*\breset\b[^|;&]*--hard') {
+    if ($sub -in @('commit', 'merge', 'rebase', 'cherry-pick', 'revert') -or
+        ($sub -eq 'reset' -and $scan -match '--hard')) {
         Block "current branch '$current' is protected — refusing to modify it directly"
     }
 }
 
 # 2. git push targeting a protected branch (refspecs, deletes, --force).
-if ($cmd -match '\bgit\b[^|;&]*\bpush\b') {
+if ($sub -eq 'push') {
     # blockAllPush: any push is a human decision. Undoing a push on a shared
     # branch costs a force-push and other people's time — the asymmetry, not
     # the branch name, is the reason this option exists.
     if ($blockAllPush) {
         Block 'blockAllPush is set — pushing is a human action; ask the user to push'
     }
-    $tokens = ($cmd -split '\s+') | Where-Object { $_ -and $_ -notmatch '^-' -and $_ -notin @('git', 'push') } | Select-Object -Skip 1
+    $tokens = ($scan -split '\s+') | Where-Object { $_ -and $_ -notmatch '^-' -and $_ -notin @('git', 'push') } | Select-Object -Skip 1
     foreach ($tok in $tokens) {
         $dst = ($tok -split ':')[-1].TrimStart('+') -replace '^refs/heads/', ''
         if ($dst -and (Test-Protected $dst)) { Block "push targets protected branch '$dst'" }
-        if ($tok.StartsWith(':') -or $cmd -match '--delete') {
+        if ($tok.StartsWith(':') -or $scan -match '--delete') {
             $src = ($tok -split ':')[0].TrimStart(':')
             if ($src -and (Test-Protected $src)) { Block "push would delete protected branch '$src'" }
         }
@@ -74,8 +97,8 @@ if ($cmd -match '\bgit\b[^|;&]*\bpush\b') {
 }
 
 # 3. Deleting a protected branch locally.
-if ($cmd -match '\bgit\b[^|;&]*\bbranch\b[^|;&]*(-D|-d|--delete)') {
-    $tokens = ($cmd -split '\s+') | Where-Object { $_ -and $_ -notmatch '^-' -and $_ -notin @('git', 'branch') }
+if ($sub -eq 'branch' -and $scan -match '(^|\s)(-D|-d|--delete)(\s|$)') {
+    $tokens = ($scan -split '\s+') | Where-Object { $_ -and $_ -notmatch '^-' -and $_ -notin @('git', 'branch') }
     foreach ($tok in $tokens) {
         if (Test-Protected $tok) { Block "deleting protected branch '$tok'" }
     }
