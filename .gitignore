@@ -1,3 +1,10 @@
 *.log
 .DS_Store
 Thumbs.db
+node_modules/
+
+# The event log records local paths and command text. Never commit it — not from
+# this repo, and not from a repo that vendored the pack.
+.claude/discipline-events.jsonl
+discipline-events.jsonl
+.claude/settings.local.json
