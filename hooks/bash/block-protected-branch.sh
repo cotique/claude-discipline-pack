@@ -12,9 +12,9 @@
 set -u
 . "$(dirname "$0")/_events.sh"
 payload=$(cat)
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null)
+DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
 export DISC_SESSION_ID
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null)
+cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null | tr -d '')
 [ -z "$cmd" ] && exit 0
 case "$cmd" in *git*) ;; *) exit 0 ;; esac
 
@@ -23,10 +23,11 @@ config="$proj/.claude/discipline.json"
 branches=""
 block_all_push=""
 if [ -f "$config" ]; then
-  # Multi-line: $() strips only the final , so without this only the last
+  # Multi-line: $() strips only the final 
+, so without this only the last
   # protected branch was ever enforced on Windows.
   branches=$(disc_jq_lines '.protectedBranches[]?' "$config")
-  block_all_push=$(jq -r 'if .blockAllPush then "1" else "" end' "$config" 2>/dev/null)
+  block_all_push=$(jq -r 'if .blockAllPush then "1" else "" end' "$config" 2>/dev/null | tr -d '')
 fi
 [ -z "$branches" ] && branches=$'main\nmaster\ndevelop\nrelease/*'
 

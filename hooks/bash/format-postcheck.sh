@@ -12,9 +12,9 @@
 set -u
 . "$(dirname "$0")/_events.sh"
 payload=$(cat)
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null)
+DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
 export DISC_SESSION_ID
-file=$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+file=$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null | tr -d '')
 [ -z "$file" ] && exit 0
 
 proj="${CLAUDE_PROJECT_DIR:-.}"

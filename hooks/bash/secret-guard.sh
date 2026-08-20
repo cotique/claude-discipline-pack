@@ -22,7 +22,7 @@
 set -u
 . "$(dirname "$0")/_events.sh"
 payload=$(cat)
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null)
+DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
 export DISC_SESSION_ID
 
 config=$(disc_config_path)
@@ -32,13 +32,13 @@ if [ -f "$config" ] && [ "$(jq -r 'if .secrets.enabled == false then "off" else 
   exit 0
 fi
 
-prompt=$(printf '%s' "$payload" | jq -r '.prompt // empty' 2>/dev/null)
+prompt=$(printf '%s' "$payload" | jq -r '.prompt // empty' 2>/dev/null | tr -d '')
 if [ -n "$prompt" ]; then
   is_prompt=1
   text="$prompt"
 else
   is_prompt=0
-  text=$(printf '%s' "$payload" | jq -r '[.tool_input.command, .tool_input.content, .tool_input.new_string, .tool_input.file_text] | map(select(. != null)) | join("\n")' 2>/dev/null)
+  text=$(printf '%s' "$payload" | jq -r '[.tool_input.command, .tool_input.content, .tool_input.new_string, .tool_input.file_text] | map(select(. != null)) | join("\n")' 2>/dev/null | tr -d '')
 fi
 [ -z "$text" ] && exit 0
 

@@ -37,11 +37,11 @@ payload=$(cat 2>/dev/null || true)
 # missing must not read as an asset that is fine.
 case "$(printf '%s' "$payload" | tr -d ' \n\t')" in
   *'"hook_event_name":"PreCompact"'*) event=PreCompact ;;
-  *) event=$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null) ;;
+  *) event=$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null | tr -d '') ;;
 esac
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null)
+DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
 export DISC_SESSION_ID
-source_name=$(printf '%s' "$payload" | jq -r '.source // empty' 2>/dev/null)
+source_name=$(printf '%s' "$payload" | jq -r '.source // empty' 2>/dev/null | tr -d '')
 
 proj="${CLAUDE_PROJECT_DIR:-.}"
 config="$proj/.claude/discipline.json"
@@ -50,8 +50,8 @@ state="$proj/.claude/session-state.json"
 repos=""
 notes=""
 if [ -f "$config" ]; then
-  repos=$(jq -r '.envelope.repos[]?' "$config" 2>/dev/null)
-  notes=$(jq -r '.envelope.notes[]?' "$config" 2>/dev/null)
+  repos=$(jq -r '.envelope.repos[]?' "$config" 2>/dev/null | tr -d '')
+  notes=$(jq -r '.envelope.notes[]?' "$config" 2>/dev/null | tr -d '')
 fi
 [ -z "$repos" ] && repos="."
 
@@ -83,9 +83,9 @@ envelope() {
 # A new session id starts the count over; a long-running session accumulates.
 compactions=0
 if [ -f "$state" ]; then
-  prev_session=$(jq -r '.sessionId // empty' "$state" 2>/dev/null)
+  prev_session=$(jq -r '.sessionId // empty' "$state" 2>/dev/null | tr -d '')
   if [ -n "$DISC_SESSION_ID" ] && [ "$prev_session" = "$DISC_SESSION_ID" ]; then
-    compactions=$(jq -r '.compactions // 0' "$state" 2>/dev/null)
+    compactions=$(jq -r '.compactions // 0' "$state" 2>/dev/null | tr -d '')
   fi
 fi
 

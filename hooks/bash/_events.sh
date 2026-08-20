@@ -25,16 +25,20 @@ disc_config_path() { echo "${CLAUDE_PROJECT_DIR:-.}/.claude/discipline.json"; }
 # branches configured, only the LAST one was ever enforced, because $() strips the
 # final \r and nothing strips the others.
 #
-# Not applied blanket-wise: single-value reads through $() are already correct,
-# since command substitution drops the trailing newline and its \r with it. Use
-# this only where output is consumed a line at a time — which is exactly where
-# a platform difference would otherwise disable an asset in silence.
+# Single-value reads through $() are NOT automatically safe either, which is worth
+# stating because it is easy to assume they are. Measured both ways: on Git Bash
+# $() does drop the \r, but on Linux it does not — command substitution strips
+# trailing NEWLINES, and the carriage return sits in front of them. A config read
+# returning the empty string came back as "\r", `[ -n ... ]` saw a value, and
+# blockAllPush switched itself on, refusing every push. Depending on the Git Bash
+# behaviour was depending on a platform quirk rather than a guarantee, so every jq
+# capture in these hooks strips \r explicitly.
 disc_jq_lines() { jq -r "$1" "$2" 2>/dev/null | tr -d '\r'; }
 
 disc_mode() {
   local c; c=$(disc_config_path)
   local m=""
-  [ -f "$c" ] && m=$(jq -r '.mode // empty' "$c" 2>/dev/null)
+  [ -f "$c" ] && m=$(jq -r '.mode // empty' "$c" 2>/dev/null | tr -d '')
   case "$m" in shadow) echo shadow ;; *) echo enforce ;; esac
 }
 
@@ -50,9 +54,9 @@ disc_log() {
   [ -f "$c" ] || return 0
 
   local enabled path
-  enabled=$(jq -r 'if .events.enabled == false then "no" else "yes" end' "$c" 2>/dev/null)
+  enabled=$(jq -r 'if .events.enabled == false then "no" else "yes" end' "$c" 2>/dev/null | tr -d '')
   [ "$enabled" = "no" ] && return 0
-  path=$(jq -r '.events.path // ".claude/discipline-events.jsonl"' "$c" 2>/dev/null)
+  path=$(jq -r '.events.path // ".claude/discipline-events.jsonl"' "$c" 2>/dev/null | tr -d '')
   case "$path" in /*|?:*) ;; *) path="${CLAUDE_PROJECT_DIR:-.}/$path" ;; esac
 
   local ts session line
