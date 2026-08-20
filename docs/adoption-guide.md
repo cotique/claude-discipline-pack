@@ -140,6 +140,71 @@ format checks are per-repo concerns by nature. What changes is where the
 in the package model it must be curated (KB + consumer lists), and the
 commands are written to go look for it.
 
+## Writing a new gate: three rules learned the hard way
+
+Each of these came from a gate in this pack misbehaving in a live session, not
+from design review. Apply them to anything you add.
+
+### 1. Jurisdiction before dependencies
+
+A gate must establish that this session is its business *before* it reports
+anything at all — including its own broken setup. `dod-gate` once put its
+"jq is missing, this is not a pass" check above every applicability test, and on
+a session with no changed files, in a directory that was not a repository and had
+no config, it returned `exit 2` for seventeen turns running. Every applicability
+check would have passed the session in silence.
+
+Order: loop guard → applicability (config present? inside a repo? anything
+actually changed?) → dependency check → the work. On that last position the
+"cannot read the checks" verdict is honest, because everything before it
+established that there was something to read them *for*.
+
+### 2. A loop guard must not depend on anything that can be missing
+
+The same incident had a second half. `stop_hook_active` — the flag that stops a
+Stop hook from blocking forever — was read through `jq`, so in the one failure
+mode that fired on every single turn, the protection against an infinite loop was
+itself unreachable. Read the re-entry flag with the crudest possible method
+(substring match on the raw payload). Looser parsing is the correct trade here:
+the guard has to survive exactly the conditions that break everything else.
+
+### 3. Decide what a missing dependency means, and never let it mean "fine"
+
+Measured on a machine without `jq`: four of five bash gates exited 0 and printed
+nothing. A push to a protected branch and a literal secret both went through, and
+the setup was indistinguishable from one where the rules simply allowed it. A
+guardrail that vanishes quietly is worse than one that was never installed,
+because its presence is still being counted on.
+
+Three legitimate answers, and the choice is per-asset:
+
+| Answer | When | Example |
+|---|---|---|
+| Block | The gate's absence is the whole risk, and blocking is proportionate | `dod-gate` at session end |
+| Pass, but say so | Blocking would cost more than the gate saves | a `PreToolUse` gate that would otherwise refuse *every* `Bash` call |
+| — | | never: pass in silence |
+
+This pack takes the middle road structurally: `session-envelope` reports at
+session start which assets are inert and why, once, so five silent absences
+become one visible statement and no gate fires on work it cannot judge. The
+PowerShell twins need no external parser and so have no equivalent failure mode —
+which is itself an argument for preferring them on Windows.
+
+**Open decision, deliberately not made here:** whether `block-protected-branch`
+and `secret-guard` should fail *closed* instead. Their silent absence is the
+security-relevant one, but blocking on a missing parser means refusing every
+shell command in the session. That trade belongs to whoever owns the repo.
+
+## Releasing a change to the plugin
+
+Pushing to `main` does **not** deliver anything. The marketplace entry carries the
+version, so `claude plugin update` sees a new release only when
+`.claude-plugin/plugin.json` *and* `.claude-plugin/marketplace.json` are both
+bumped. A fix that is merged but not bumped sits invisible between the repository
+and every installed cache — the cached copy keeps running the old code, including
+the bug you just fixed. `claude plugin tag` validates that the two manifests
+agree before it creates the release tag; use it rather than tagging by hand.
+
 ## Graduating from commands to project skills
 
 The generic commands are a starting point, not an end state. They work on day

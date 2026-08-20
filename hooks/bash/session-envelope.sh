@@ -28,9 +28,19 @@
 set -u
 . "$(dirname "$0")/_events.sh"
 payload=$(cat 2>/dev/null || true)
+
+# Which event this is decides whether we persist or print, so it must not be
+# readable only when jq happens to be installed. Measured: with jq absent the
+# parsed value came back empty, PreCompact fell through to the SessionStart
+# branch, and the asset printed instead of saving — the compaction counter stayed
+# at zero forever while the hook looked like it was working. A dependency that is
+# missing must not read as an asset that is fine.
+case "$(printf '%s' "$payload" | tr -d ' \n\t')" in
+  *'"hook_event_name":"PreCompact"'*) event=PreCompact ;;
+  *) event=$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null) ;;
+esac
 DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null)
 export DISC_SESSION_ID
-event=$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null)
 source_name=$(printf '%s' "$payload" | jq -r '.source // empty' 2>/dev/null)
 
 proj="${CLAUDE_PROJECT_DIR:-.}"
@@ -80,6 +90,15 @@ if [ -f "$state" ]; then
 fi
 
 if [ "$event" = "PreCompact" ]; then
+  # Persisting needs jq to build the file. Without it the state cannot be saved,
+  # and the one thing that must not happen is saving nothing quietly: the next
+  # session would read a zero counter as "no compactions yet".
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "[session-envelope] jq is missing, so the envelope was NOT saved across this compaction." >&2
+    echo "[session-envelope] Re-derive branch, base and repo scope after the summary; do not trust the counter." >&2
+    disc_log session-envelope degraded fired "jq missing: envelope not persisted"
+    exit 0
+  fi
   compactions=$((compactions + 1))
   mkdir -p "$(dirname "$state")" 2>/dev/null
   jq -n --arg s "$DISC_SESSION_ID" --argjson c "$compactions" \
@@ -103,4 +122,22 @@ if [ "$compactions" -gt 0 ]; then
 fi
 echo "  Treat the above as current state, not as history: re-run these checks"
 echo "  before any mutation if the conversation has been compacted since."
+
+# Dependency report, once per session. Measured on a machine without jq: four of
+# the five gates exited 0 and printed nothing — a push to a protected branch and a
+# literal secret both sailed through, and the setup was indistinguishable from one
+# where the rules simply allowed it. Guardrails that vanish quietly are worse than
+# absent ones, because their presence is still being counted on.
+#
+# Announcing here rather than blocking in each hook is deliberate: a PreToolUse
+# gate that exits 2 on a missing dependency would refuse every Bash call in the
+# session, which is a far larger failure than the one it reports. One loud
+# statement at session start, no gate that fires on work it cannot judge.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "  DEPENDENCY MISSING: jq is not installed, so these bash hooks are INERT:"
+  echo "    block-protected-branch, secret-guard, format-postcheck, kb-first-reminder"
+  echo "    (dod-gate still reports; the envelope above is not persisted across compaction)"
+  echo "  Install jq, or use the PowerShell twins, which need no external parser."
+  disc_log session-envelope degraded fired "jq missing: enforcement hooks inert"
+fi
 exit 0

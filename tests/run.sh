@@ -59,16 +59,16 @@ mask_jq() { # -> echoes a usable masked PATH dir, or empty if one cannot be buil
     rm -rf "$d"
   fi
 }
-run_nojq() { # payload proj -> sets RC, OUT; sets NOJQ_SKIP when it cannot run
+run_nojq() { # payload proj [hook=dod-gate.sh] -> sets RC, OUT; NOJQ_SKIP if it cannot run
   NOJQ_SKIP=""
-  local bash_bin; bash_bin=$(command -v bash)
+  local bash_bin hook; bash_bin=$(command -v bash); hook="${3:-dod-gate.sh}"
   if ! command -v jq >/dev/null 2>&1; then
-    OUT=$(printf '%s' "$1" | CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/dod-gate.sh" 2>&1); RC=$?
+    OUT=$(printf '%s' "$1" | CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/$hook" 2>&1); RC=$?
     return 0
   fi
   local d; d=$(mask_jq)
   if [ -z "$d" ]; then NOJQ_SKIP="cannot build a working PATH without jq in this environment"; RC=0; OUT=""; return 0; fi
-  OUT=$(printf '%s' "$1" | PATH="$d" CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/dod-gate.sh" 2>&1); RC=$?
+  OUT=$(printf '%s' "$1" | PATH="$d" CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/$hook" 2>&1); RC=$?
   rm -rf "$d"
 }
 assert_nojq() { # name expect_rc [substr]
@@ -271,6 +271,46 @@ assert_nojq 'dod: no jq + dirty tree -> blocks' 2 'not a pass'
 # 4. regression on the dead loop guard: it must hold without a parser
 run_nojq '{"stop_hook_active":true}' "$clean"
 assert_nojq 'dod: no jq + stop_hook_active -> no stop loop' 0
+
+# A missing dependency must not read as a working asset. Measured with jq absent:
+# four of the five gates exited 0 and printed nothing, so a push to a protected
+# branch and a literal secret both went through and the setup was
+# indistinguishable from one where the rules allowed it.
+dep=$(new_repo feature/dep)
+set_config "$dep" '{"envelope":{"notes":["never touch the shared release branch"]}}'
+
+run_nojq '{"hook_event_name":"SessionStart","source":"startup","session_id":"s"}' "$dep" session-envelope.sh
+assert_nojq 'deps: session start names the inert hooks' 0 'DEPENDENCY MISSING'
+if [ -z "$NOJQ_SKIP" ]; then
+  for named in block-protected-branch secret-guard format-postcheck kb-first-reminder; do
+    if printf '%s' "$OUT" | grep -q "$named"; then echo "PASS  deps: report names $named"
+    else echo "FAIL  deps: report omits $named"; failed=$((failed+1)); fi
+  done
+fi
+
+# PreCompact cannot save without jq; the one thing it must not do is save nothing
+# quietly, because the next session reads a zero counter as "no compactions yet".
+run_nojq '{"hook_event_name":"PreCompact","session_id":"s"}' "$dep" session-envelope.sh
+assert_nojq 'deps: precompact says the envelope was not saved' 0 'NOT saved'
+if [ -z "$NOJQ_SKIP" ]; then
+  if printf '%s' "$OUT" | grep -q 'operational envelope'; then
+    echo 'FAIL  deps: precompact printed the envelope instead of persisting'; failed=$((failed+1))
+  else echo 'PASS  deps: precompact does not fall through to the print branch'; fi
+  if [ -f "$dep/.claude/session-state.json" ]; then
+    echo 'FAIL  deps: state file written without jq'; failed=$((failed+1))
+  else echo 'PASS  deps: no state file, and it said so'; fi
+fi
+
+# With jq present the same event must still persist — the guard is for its absence.
+# Skipped rather than assumed where jq is genuinely missing: the premise would be
+# false, and a test that cannot hold its own premise reports nothing useful.
+if command -v jq >/dev/null 2>&1; then
+  run_hook session-envelope.sh '{"hook_event_name":"PreCompact","session_id":"s"}' "$dep"
+  if [ -f "$dep/.claude/session-state.json" ]; then echo 'PASS  deps: with jq, precompact still persists'
+  else echo 'FAIL  deps: precompact stopped persisting when jq is present'; failed=$((failed+1)); fi
+else
+  echo 'SKIP  deps: with jq, precompact still persists (jq not installed here; CI covers it)'
+fi
 
 # ---- code-graph snapshot freshness ----
 gs=$(new_repo feature/graphsnap)
