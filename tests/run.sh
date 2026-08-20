@@ -38,6 +38,44 @@ assert() { # name expect_rc [expect_out_substr]
   fi
 }
 
+# Making jq unavailable is environment-specific, and getting it wrong produces a
+# green test for the wrong reason. Three cases, each handled explicitly:
+#   - jq genuinely absent  -> that IS the condition under test; run as-is;
+#   - jq present           -> run under a PATH holding the hook's other tools only;
+#   - masking unusable     -> SKIP loudly. On Git Bash `ln -sf` copies the binary
+#     and the copy cannot find msys-2.0.dll, so the masked tools silently return
+#     nothing. That is how the original version of this test came to pass on a
+#     failed `source` rather than on the guard it claims to exercise.
+NOJQ_SKIP=""
+mask_jq() { # -> echoes a usable masked PATH dir, or empty if one cannot be built
+  local d t p; d=$(mktemp -d)
+  for t in bash cat date sed grep basename dirname tr wc git mkdir rm mktemp; do
+    p=$(command -v "$t") && ln -sf "$p" "$d/$t" 2>/dev/null
+  done
+  # Prove the masked PATH actually works before any verdict rests on it.
+  if PATH="$d" dirname /a/b >/dev/null 2>&1 && [ -n "$(PATH="$d" dirname /a/b 2>/dev/null)" ]; then
+    printf '%s' "$d"
+  else
+    rm -rf "$d"
+  fi
+}
+run_nojq() { # payload proj -> sets RC, OUT; sets NOJQ_SKIP when it cannot run
+  NOJQ_SKIP=""
+  local bash_bin; bash_bin=$(command -v bash)
+  if ! command -v jq >/dev/null 2>&1; then
+    OUT=$(printf '%s' "$1" | CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/dod-gate.sh" 2>&1); RC=$?
+    return 0
+  fi
+  local d; d=$(mask_jq)
+  if [ -z "$d" ]; then NOJQ_SKIP="cannot build a working PATH without jq in this environment"; RC=0; OUT=""; return 0; fi
+  OUT=$(printf '%s' "$1" | PATH="$d" CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/dod-gate.sh" 2>&1); RC=$?
+  rm -rf "$d"
+}
+assert_nojq() { # name expect_rc [substr]
+  if [ -n "$NOJQ_SKIP" ]; then echo "SKIP  $1 ($NOJQ_SKIP)"; return 0; fi
+  assert "$@"
+}
+
 base_cfg='{"protectedBranches":["main","master","develop","release/*"]}'
 
 # ---- block-protected-branch ----
@@ -199,18 +237,40 @@ assert 'dod: shadow reports precondition' 0 'SHADOW'
 # jq missing must block, not silently pass: without it every config read fails
 # soft and "tool absent" becomes indistinguishable from "nothing configured".
 set_config "$pre" '{"dod":{"fileGlobs":["*.ts"],"checks":[{"name":"t","command":"true"}]}}'
-# A PATH with nothing on it hides bash too, so build one that has what the hook
-# needs and deliberately lacks jq.
-jqless=$(mktemp -d)
-for t in cat date sed grep basename tr wc git mkdir rm; do
-  p=$(command -v "$t") && ln -sf "$p" "$jqless/$t"
-done
-bash_bin=$(command -v bash)
-OUT=$(printf '%s' '{"stop_hook_active":false}' | PATH="$jqless" CLAUDE_PROJECT_DIR="$pre" "$bash_bin" "$hooks/dod-gate.sh" 2>&1); RC=$?
-rm -rf "$jqless"
-if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'not a pass'; then
-  echo 'PASS  dod: jq missing blocks and says it is not a pass'
-else echo "FAIL  dod: jq missing did not block (exit $RC): $OUT"; failed=$((failed+1)); fi
+# Uses the shared masking helper below, which proves the masked PATH works before
+# any verdict rests on it. The hand-rolled version this replaces went green on a
+# failed `source` instead of on the guard it claims to exercise.
+run_nojq '{"stop_hook_active":false}' "$pre"
+assert_nojq 'dod: jq missing blocks and says it is not a pass' 2 'not a pass'
+
+# Jurisdiction before dependencies. Field report: on a session with no changed
+# files, in a directory that was not a repo and had no config, this gate returned
+# exit 2 seventeen turns running because the jq guard sat above every
+# applicability check — and the stop-loop guard, read through jq, was unreachable
+# in exactly the one failure mode that fired every turn.
+
+# 1. not a repo at all -> the gate has no claim, and says nothing
+notrepo=$(mktemp -d)
+run_nojq '{"stop_hook_active":false}' "$notrepo"
+if [ -n "$NOJQ_SKIP" ]; then echo "SKIP  dod: no jq + not a repo ($NOJQ_SKIP)"
+elif [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then echo 'PASS  dod: no jq + not a repo -> silent pass'
+else echo "FAIL  dod: no jq + not a repo (exit $RC): $OUT"; failed=$((failed+1)); fi
+
+# 2. repo and config, but nothing changed -> nothing a fileGlob could match
+clean=$(new_repo feature/clean)
+set_config "$clean" '{"dod":{"fileGlobs":["*.ts"],"checks":[{"name":"t","command":"true"}]}}'
+git -C "$clean" add -A && git -C "$clean" -c user.email=t@t.t -c user.name=t commit -q -m cfg
+run_nojq '{"stop_hook_active":false}' "$clean"
+assert_nojq 'dod: no jq + clean tree -> pass' 0
+
+# 3. same setup, one uncommitted change under the glob -> the exit 2 is honest
+echo 'const y=2' > "$clean/y.ts"
+run_nojq '{"stop_hook_active":false}' "$clean"
+assert_nojq 'dod: no jq + dirty tree -> blocks' 2 'not a pass'
+
+# 4. regression on the dead loop guard: it must hold without a parser
+run_nojq '{"stop_hook_active":true}' "$clean"
+assert_nojq 'dod: no jq + stop_hook_active -> no stop loop' 0
 
 # ---- code-graph snapshot freshness ----
 gs=$(new_repo feature/graphsnap)

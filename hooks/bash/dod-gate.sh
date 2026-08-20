@@ -16,29 +16,48 @@
 set -u
 . "$(dirname "$0")/_events.sh"
 
+payload=$(cat)
+
+# The loop guard must not depend on the thing it guards against. Below, a missing
+# jq is a deliberate exit 2; if that verdict can be reached while this guard is
+# unreachable, the stop loop never terminates — measured at seventeen consecutive
+# turns. So read stop_hook_active without a parser. Substring matching on
+# whitespace-stripped JSON is looser than jq and knowingly so: that looseness is
+# the price of a guard that still works once the parser is gone.
+case "$(printf '%s' "$payload" | tr -d ' \n\t')" in
+  *'"stop_hook_active":true'*) exit 0 ;;
+esac
+
+proj="${CLAUDE_PROJECT_DIR:-.}"
+config="$proj/.claude/discipline.json"
+
+# Jurisdiction before dependencies. A gate must establish that this session is
+# its business before it reports anything at all — including its own broken
+# setup. Reporting a missing dependency to a session the gate would have passed
+# on regardless is a false intercept, and a gate that fires on work it has no
+# claim to is how gates get switched off. All three checks are jq-free by
+# construction, so they survive exactly the failure mode below.
+[ -f "$config" ] || exit 0
+git -C "$proj" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
+# A clean tree cannot match any fileGlob, so exiting here is equivalent to
+# exiting at the glob check further down — minus the config reads that need jq.
+[ -n "$(git -C "$proj" status --porcelain 2>/dev/null)" ] || exit 0
+
 # Checked rather than assumed: every config read below goes through jq, and each
 # one is written to fail soft. With jq absent they all fail, so "the tool is
 # missing" and "nothing is configured" produce the identical silent pass — the
 # gate stops existing instead of reporting an error. A missing dependency must
-# never read as a passing verdict.
+# never read as a passing verdict. Reached only once jurisdiction is established:
+# config present, inside a repo, changes pending, and nothing to read them with.
 command -v jq >/dev/null 2>&1 || {
   echo "[dod-gate] jq is not installed, so the checks cannot be read. This is not a pass." >&2
   exit 2
 }
 
-payload=$(cat)
 DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null)
 export DISC_SESSION_ID
 
-# Prevent infinite stop-loops: if we already blocked once this stop, let it through.
-[ "$(printf '%s' "$payload" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ] && exit 0
-
-proj="${CLAUDE_PROJECT_DIR:-.}"
-config="$proj/.claude/discipline.json"
-[ -f "$config" ] || exit 0
 jq -e '.dod.checks | length > 0' "$config" >/dev/null 2>&1 || exit 0
-
-git -C "$proj" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
 # Any uncommitted (staged or unstaged) file matching a DoD glob?
 mapfile -t globs < <(jq -r '.dod.fileGlobs[]?' "$config" 2>/dev/null)
