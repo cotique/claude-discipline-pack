@@ -59,14 +59,28 @@ mask_jq() { # -> echoes a PATH value where jq is unavailable, or empty if imposs
      [ -n "$(PATH="$probe" dirname /a/b 2>/dev/null)" ]; then
     printf '%s' "$probe"; return 0
   fi
-  # Otherwise stand up a directory holding the hook's other tools. On Git Bash
-  # `ln -sf` copies the binary and the copy cannot find msys-2.0.dll, so the
-  # masked tools silently return nothing — hence the probe before trusting it.
+  # Otherwise mirror every executable on PATH except jq. Naming the tools a hook
+  # needs was tried first and is a losing game: the list silently goes stale the
+  # moment a hook calls one more utility, and the test then fails for a reason
+  # that has nothing to do with the code under test (it failed on `tail`).
+  # On Git Bash this branch is unusable anyway — `ln -sf` copies the binary and
+  # the copy cannot find msys-2.0.dll — hence the probe before trusting it.
   d=$(mktemp -d)
-  for t in bash cat date sed grep basename dirname tr wc git mkdir rm mktemp head paste; do
-    p=$(command -v "$t") && ln -sf "$p" "$d/$t" 2>/dev/null
+  printf '%s' "$PATH" | tr ':' '
+' | while IFS= read -r dir; do
+    [ -d "$dir" ] || continue
+    for p in "$dir"/*; do
+      [ -x "$p" ] || continue
+      t=$(basename "$p")
+      [ "$t" = jq ] && continue
+      [ -e "$d/$t" ] || ln -sf "$p" "$d/$t" 2>/dev/null
+    done
   done
-  if [ -n "$(PATH="$d" dirname /a/b 2>/dev/null)" ]; then printf '%s' "$d"; else rm -rf "$d"; fi
+  if [ -n "$(PATH="$d" dirname /a/b 2>/dev/null)" ] && ! PATH="$d" command -v jq >/dev/null 2>&1; then
+    printf '%s' "$d"
+  else
+    rm -rf "$d"
+  fi
 }
 run_nojq() { # payload proj [hook=dod-gate.sh] -> sets RC, OUT; NOJQ_SKIP if it cannot run
   NOJQ_SKIP=""
