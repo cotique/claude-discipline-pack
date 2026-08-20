@@ -12,9 +12,21 @@
 set -u
 . "$(dirname "$0")/_events.sh"
 payload=$(cat)
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
-export DISC_SESSION_ID
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null | tr -d '')
+
+# REDUCED mode. This is a PreToolUse gate on Bash, so exiting 2 because jq is
+# missing would refuse every shell command in the session — a far larger failure
+# than the one it reports. Vanishing silently is worse still: a push to main went
+# through and the setup was indistinguishable from one where the rules allowed it.
+# So keep the gate alive on its built-in defaults, and label the verdict.
+degraded=""
+if disc_have_jq; then
+  DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '\r')
+  cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command // empty' 2>/dev/null | tr -d '\r')
+else
+  degraded=1
+  DISC_SESSION_ID=$(printf '%s' "$payload" | disc_field_crude session_id)
+  cmd=$(printf '%s' "$payload" | disc_field_crude command)
+fi
 [ -z "$cmd" ] && exit 0
 case "$cmd" in *git*) ;; *) exit 0 ;; esac
 
@@ -22,12 +34,11 @@ proj="${CLAUDE_PROJECT_DIR:-.}"
 config="$proj/.claude/discipline.json"
 branches=""
 block_all_push=""
-if [ -f "$config" ]; then
-  # Multi-line: $() strips only the final 
-, so without this only the last
-  # protected branch was ever enforced on Windows.
+if [ -f "$config" ] && disc_have_jq; then
+  # Multi-line, so read it line-wise: $() strips only the final carriage return,
+  # and without this only the last protected branch was enforced on Windows.
   branches=$(disc_jq_lines '.protectedBranches[]?' "$config")
-  block_all_push=$(jq -r 'if .blockAllPush then "1" else "" end' "$config" 2>/dev/null | tr -d '')
+  block_all_push=$(jq -r 'if .blockAllPush then "1" else "" end' "$config" 2>/dev/null | tr -d '\r')
 fi
 [ -z "$branches" ] && branches=$'main\nmaster\ndevelop\nrelease/*'
 
@@ -52,6 +63,7 @@ block() {
   disc_log block-protected-branch block fail "$1"
   echo "[block-protected-branch] BLOCKED: $1" >&2
   echo "Create or switch to a feature branch, then retry." >&2
+  [ -n "$degraded" ] && echo "(REDUCED: jq is missing, so this ran on the built-in branch list.)" >&2
   exit 2
 }
 

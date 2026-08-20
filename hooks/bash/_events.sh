@@ -35,10 +35,26 @@ disc_config_path() { echo "${CLAUDE_PROJECT_DIR:-.}/.claude/discipline.json"; }
 # capture in these hooks strips \r explicitly.
 disc_jq_lines() { jq -r "$1" "$2" 2>/dev/null | tr -d '\r'; }
 
+disc_have_jq() { command -v jq >/dev/null 2>&1; }
+
+# Parser-free extraction of one string field from the hook payload, for REDUCED
+# mode only. Without jq a gate has two bad options — vanish, or refuse every call
+# it cannot parse — and a third better one: keep working on built-in defaults and
+# say that it is doing so. This is how it reads the payload in that state.
+#
+# It stops at the first quote in the value, so a command containing escaped quotes
+# comes back truncated. That is a real loss of coverage, which is why every caller
+# labels its verdict REDUCED rather than passing it off as a full check. Erring
+# toward missing rather than toward blocking is deliberate: a gate that fires on
+# work it misread is how gates get switched off.
+disc_field_crude() { # field name; payload on stdin
+  sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
 disc_mode() {
   local c; c=$(disc_config_path)
   local m=""
-  [ -f "$c" ] && m=$(jq -r '.mode // empty' "$c" 2>/dev/null | tr -d '')
+  [ -f "$c" ] && m=$(jq -r '.mode // empty' "$c" 2>/dev/null | tr -d '\r')
   case "$m" in shadow) echo shadow ;; *) echo enforce ;; esac
 }
 
@@ -54,9 +70,20 @@ disc_log() {
   [ -f "$c" ] || return 0
 
   local enabled path
-  enabled=$(jq -r 'if .events.enabled == false then "no" else "yes" end' "$c" 2>/dev/null | tr -d '')
+  if disc_have_jq; then
+    enabled=$(jq -r 'if .events.enabled == false then "no" else "yes" end' "$c" 2>/dev/null | tr -d '\r')
+    path=$(jq -r '.events.path // ".claude/discipline-events.jsonl"' "$c" 2>/dev/null | tr -d '\r')
+  else
+    # Reduced mode: an unreadable config used to leave path empty, which resolved
+    # to the project directory itself and made every append fail with
+    # "Is a directory" on stderr — noise from a gate that was otherwise working.
+    # Honour an explicit off switch crudely, then fall back to the default path.
+    grep -q '"enabled"[[:space:]]*:[[:space:]]*false' "$c" 2>/dev/null && return 0
+    enabled=yes
+    path=".claude/discipline-events.jsonl"
+  fi
   [ "$enabled" = "no" ] && return 0
-  path=$(jq -r '.events.path // ".claude/discipline-events.jsonl"' "$c" 2>/dev/null | tr -d '')
+  [ -z "$path" ] && path=".claude/discipline-events.jsonl"
   case "$path" in /*|?:*) ;; *) path="${CLAUDE_PROJECT_DIR:-.}/$path" ;; esac
 
   local ts session line

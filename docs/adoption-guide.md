@@ -180,20 +180,35 @@ Three legitimate answers, and the choice is per-asset:
 
 | Answer | When | Example |
 |---|---|---|
-| Block | The gate's absence is the whole risk, and blocking is proportionate | `dod-gate` at session end |
-| Pass, but say so | Blocking would cost more than the gate saves | a `PreToolUse` gate that would otherwise refuse *every* `Bash` call |
+| **Reduced** — keep guarding, on built-in defaults, and label the verdict | The asset's core job does not actually need the dependency | `block-protected-branch`, `secret-guard` |
+| **Block** | The gate's absence is the whole risk and blocking is proportionate | `dod-gate`, once per session at the end |
+| **Pass, but say so** | Nothing useful survives without the dependency | `format-postcheck`, `kb-first-reminder` |
 | — | | never: pass in silence |
 
-This pack takes the middle road structurally: `session-envelope` reports at
-session start which assets are inert and why, once, so five silent absences
-become one visible statement and no gate fires on work it cannot judge. The
-PowerShell twins need no external parser and so have no equivalent failure mode —
-which is itself an argument for preferring them on Windows.
+Reduced mode is the answer to reach for first, because the choice between
+"vanish" and "refuse everything" is usually false. Both of the gates above do
+their most important work with no parser at all: `block-protected-branch` ships a
+default branch list (`main`, `master`, `develop`, `release/*`) and needs only the
+command, which can be pulled out of the payload crudely; `secret-guard`'s
+detectors are literals in the script and never needed `jq` — only the *custom*
+pattern lists did. Losing a custom list is worth far less than losing the gate.
 
-**Open decision, deliberately not made here:** whether `block-protected-branch`
-and `secret-guard` should fail *closed* instead. Their silent absence is the
-security-relevant one, but blocking on a missing parser means refusing every
-shell command in the session. That trade belongs to whoever owns the repo.
+Three things reduced mode owes the reader:
+
+1. **Label every verdict** `REDUCED`, so a block is never mistaken for a full
+   check. Crude payload extraction stops at the first quote, so a command with
+   escaped quotes comes back truncated — real lost coverage, stated rather than
+   hidden.
+2. **Err toward missing, not toward blocking.** A gate that fires on input it
+   misread is how gates get switched off; that is the same reasoning as rule 1.
+3. **Still honour an explicit off switch.** `"enabled": false` is the owner's
+   decision, and a degraded gate must not override it just because it cannot
+   parse the file — check for it crudely instead.
+
+Alongside that, `session-envelope` reports once at session start which assets are
+reduced and which are inert, so a degraded setup states itself instead of being
+inferred. The PowerShell twins need no external parser and have no equivalent
+failure mode — which is itself an argument for preferring them on Windows.
 
 ### 4. A dependency that is *present* can still differ by platform
 

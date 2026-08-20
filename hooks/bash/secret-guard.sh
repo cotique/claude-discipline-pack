@@ -22,23 +22,52 @@
 set -u
 . "$(dirname "$0")/_events.sh"
 payload=$(cat)
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
+
+# REDUCED mode. The built-in detectors are literals in this script, so they work
+# with no parser at all — only the payload read and the user-configured lists need
+# jq. Losing the custom lists is worth far less than losing the gate: without this
+# branch a literal secret went through in silence.
+degraded=""
+disc_have_jq || degraded=1
+
+if [ -z "$degraded" ]; then
+  DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '\r')
+else
+  DISC_SESSION_ID=$(printf '%s' "$payload" | disc_field_crude session_id)
+fi
 export DISC_SESSION_ID
 
 config=$(disc_config_path)
 # `// "true"` would be wrong here: jq's alternative operator treats `false` the
 # same as absent, so "enabled": false read as enabled. Compare explicitly.
-if [ -f "$config" ] && [ "$(jq -r 'if .secrets.enabled == false then "off" else "on" end' "$config" 2>/dev/null)" = "off" ]; then
+if [ -z "$degraded" ] && [ -f "$config" ] && [ "$(jq -r 'if .secrets.enabled == false then "off" else "on" end' "$config" 2>/dev/null | tr -d '\r')" = "off" ]; then
+  exit 0
+fi
+# In reduced mode `"enabled": false` cannot be read through a parser, and a gate
+# the owner switched off must stay off — so check for it crudely rather than
+# overriding an explicit decision.
+if [ -n "$degraded" ] && [ -f "$config" ] &&
+   grep -q '"enabled"[[:space:]]*:[[:space:]]*false' "$config" 2>/dev/null; then
   exit 0
 fi
 
-prompt=$(printf '%s' "$payload" | jq -r '.prompt // empty' 2>/dev/null | tr -d '')
+if [ -z "$degraded" ]; then
+  prompt=$(printf '%s' "$payload" | jq -r '.prompt // empty' 2>/dev/null | tr -d '\r')
+else
+  prompt=$(printf '%s' "$payload" | disc_field_crude prompt)
+fi
 if [ -n "$prompt" ]; then
   is_prompt=1
   text="$prompt"
 else
   is_prompt=0
-  text=$(printf '%s' "$payload" | jq -r '[.tool_input.command, .tool_input.content, .tool_input.new_string, .tool_input.file_text] | map(select(. != null)) | join("\n")' 2>/dev/null | tr -d '')
+  if [ -z "$degraded" ]; then
+    text=$(printf '%s' "$payload" | jq -r '[.tool_input.command, .tool_input.content, .tool_input.new_string, .tool_input.file_text] | map(select(. != null)) | join("\n")' 2>/dev/null | tr -d '\r')
+  else
+    text=$(for fld in command content new_string file_text; do
+             printf '%s' "$payload" | disc_field_crude "$fld"
+           done)
+  fi
 fi
 [ -z "$text" ] && exit 0
 
@@ -51,8 +80,10 @@ cat > "$ignore_file" <<'IGN'
 process\.env\.
 os\.environ
 IGN
-if [ -f "$config" ]; then
-  jq -r '.secrets.ignorePatterns[]?' "$config" 2>/dev/null >> "$ignore_file"
+# Reduced mode keeps only the built-in ignore list above, so false positives stay
+# controlled even when the custom lists cannot be read.
+if [ -f "$config" ] && [ -z "$degraded" ]; then
+  disc_jq_lines '.secrets.ignorePatterns[]?' "$config" >> "$ignore_file"
 fi
 
 is_placeholder() {  # $1 = matched sample
@@ -93,7 +124,7 @@ while IFS= read -r sample; do
   is_placeholder "$val" || { case "$hits" in *'credential in prose'*) ;; *) hits="${hits}credential in prose, ";; esac; }
 done < <(printf '%s' "$text" | grep -Eoi -e "$narrative" 2>/dev/null)
 
-if [ -f "$config" ]; then
+if [ -f "$config" ] && [ -z "$degraded" ]; then
   n=0
   while IFS= read -r p; do
     [ -z "$p" ] && continue
@@ -111,6 +142,7 @@ if [ "$is_prompt" -eq 1 ]; then
   echo "  It is now in the transcript on disk. Treat it as compromised and rotate it."
   echo "  Do not echo it into a file, a command, or a commit. Refer to the secret store"
   echo "  or an environment variable name instead."
+  [ -n "$degraded" ] && echo "  (REDUCED: jq is missing, so only the built-in detectors ran.)"
   exit 0
 fi
 
@@ -124,5 +156,6 @@ disc_log secret-guard block fail "$what"
   echo "[secret-guard] BLOCKED: this would write credential material ($what)."
   echo "Use the secret store or an environment variable reference instead of the literal value."
   echo "If the value is a placeholder the pattern misread, add it to secrets.ignorePatterns."
+  [ -n "$degraded" ] && echo "(REDUCED: jq is missing, so only the built-in detectors ran.)"
 } >&2
 exit 2

@@ -54,7 +54,7 @@ command -v jq >/dev/null 2>&1 || {
   exit 2
 }
 
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
+DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '\r')
 export DISC_SESSION_ID
 
 jq -e '.dod.checks | length > 0' "$config" >/dev/null 2>&1 || exit 0

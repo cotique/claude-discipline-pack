@@ -37,11 +37,11 @@ payload=$(cat 2>/dev/null || true)
 # missing must not read as an asset that is fine.
 case "$(printf '%s' "$payload" | tr -d ' \n\t')" in
   *'"hook_event_name":"PreCompact"'*) event=PreCompact ;;
-  *) event=$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null | tr -d '') ;;
+  *) event=$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null | tr -d '\r') ;;
 esac
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
+DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '\r')
 export DISC_SESSION_ID
-source_name=$(printf '%s' "$payload" | jq -r '.source // empty' 2>/dev/null | tr -d '')
+source_name=$(printf '%s' "$payload" | jq -r '.source // empty' 2>/dev/null | tr -d '\r')
 
 proj="${CLAUDE_PROJECT_DIR:-.}"
 config="$proj/.claude/discipline.json"
@@ -50,8 +50,8 @@ state="$proj/.claude/session-state.json"
 repos=""
 notes=""
 if [ -f "$config" ]; then
-  repos=$(jq -r '.envelope.repos[]?' "$config" 2>/dev/null | tr -d '')
-  notes=$(jq -r '.envelope.notes[]?' "$config" 2>/dev/null | tr -d '')
+  repos=$(jq -r '.envelope.repos[]?' "$config" 2>/dev/null | tr -d '\r')
+  notes=$(jq -r '.envelope.notes[]?' "$config" 2>/dev/null | tr -d '\r')
 fi
 [ -z "$repos" ] && repos="."
 
@@ -83,9 +83,9 @@ envelope() {
 # A new session id starts the count over; a long-running session accumulates.
 compactions=0
 if [ -f "$state" ]; then
-  prev_session=$(jq -r '.sessionId // empty' "$state" 2>/dev/null | tr -d '')
+  prev_session=$(jq -r '.sessionId // empty' "$state" 2>/dev/null | tr -d '\r')
   if [ -n "$DISC_SESSION_ID" ] && [ "$prev_session" = "$DISC_SESSION_ID" ]; then
-    compactions=$(jq -r '.compactions // 0' "$state" 2>/dev/null | tr -d '')
+    compactions=$(jq -r '.compactions // 0' "$state" 2>/dev/null | tr -d '\r')
   fi
 fi
 
@@ -134,9 +134,11 @@ echo "  before any mutation if the conversation has been compacted since."
 # session, which is a far larger failure than the one it reports. One loud
 # statement at session start, no gate that fires on work it cannot judge.
 if ! command -v jq >/dev/null 2>&1; then
-  echo "  DEPENDENCY MISSING: jq is not installed, so these bash hooks are INERT:"
-  echo "    block-protected-branch, secret-guard, format-postcheck, kb-first-reminder"
-  echo "    (dod-gate still reports; the envelope above is not persisted across compaction)"
+  echo "  DEPENDENCY MISSING: jq is not installed. Current state of the bash hooks:"
+  echo "    REDUCED  block-protected-branch - built-in branch list only, no config"
+  echo "    REDUCED  secret-guard - built-in detectors only, no custom patterns"
+  echo "    INERT    format-postcheck, kb-first-reminder"
+  echo "    dod-gate still reports; the envelope above is NOT persisted across compaction"
   echo "  Install jq, or use the PowerShell twins, which need no external parser."
   disc_log session-envelope degraded fired "jq missing: enforcement hooks inert"
 fi

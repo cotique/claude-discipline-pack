@@ -12,23 +12,23 @@
 set -u
 . "$(dirname "$0")/_events.sh"
 payload=$(cat)
-DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '')
+DISC_SESSION_ID=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null | tr -d '\r')
 export DISC_SESSION_ID
-prompt=$(printf '%s' "$payload" | jq -r '.prompt // empty' 2>/dev/null | tr -d '')
+prompt=$(printf '%s' "$payload" | jq -r '.prompt // empty' 2>/dev/null | tr -d '\r')
 [ -z "$prompt" ] && exit 0
 
 proj="${CLAUDE_PROJECT_DIR:-.}"
 config="$proj/.claude/discipline.json"
 [ -f "$config" ] || exit 0
 
-tool=$(jq -r '.kb.toolName // empty' "$config" 2>/dev/null | tr -d '')
+tool=$(jq -r '.kb.toolName // empty' "$config" 2>/dev/null | tr -d '\r')
 [ -z "$tool" ] && exit 0
 
 lower=$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]')
 
 # Looks like a research question? Override via kb.triggerPattern when your
 # prompts aren't English.
-pattern=$(jq -r '.kb.triggerPattern // empty' "$config" 2>/dev/null | tr -d '')
+pattern=$(jq -r '.kb.triggerPattern // empty' "$config" 2>/dev/null | tr -d '\r')
 [ -z "$pattern" ] && pattern='\b(how|why|what|where|when|which|explain|history|architecture|flow|behavio(u)?r)\b|\?'
 printf '%s' "$lower" | grep -Eq "$pattern" || exit 0
 

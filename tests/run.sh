@@ -47,17 +47,26 @@ assert() { # name expect_rc [expect_out_substr]
 #     nothing. That is how the original version of this test came to pass on a
 #     failed `source` rather than on the guard it claims to exercise.
 NOJQ_SKIP=""
-mask_jq() { # -> echoes a usable masked PATH dir, or empty if one cannot be built
-  local d t p; d=$(mktemp -d)
-  for t in bash cat date sed grep basename dirname tr wc git mkdir rm mktemp; do
+mask_jq() { # -> echoes a PATH value where jq is unavailable, or empty if impossible
+  local t p d probe
+  # Cheapest and most faithful: drop the directory jq lives in. Works when jq has
+  # its own bin dir (common on Windows); useless when it shares /usr/bin with
+  # coreutils, which is the normal Linux layout.
+  local jqdir; jqdir=$(dirname "$(command -v jq)")
+  probe=$(printf '%s' "$PATH" | tr ':' '
+' | grep -vxF "$jqdir" | paste -sd: -)
+  if [ -n "$probe" ] && ! PATH="$probe" command -v jq >/dev/null 2>&1 &&
+     [ -n "$(PATH="$probe" dirname /a/b 2>/dev/null)" ]; then
+    printf '%s' "$probe"; return 0
+  fi
+  # Otherwise stand up a directory holding the hook's other tools. On Git Bash
+  # `ln -sf` copies the binary and the copy cannot find msys-2.0.dll, so the
+  # masked tools silently return nothing — hence the probe before trusting it.
+  d=$(mktemp -d)
+  for t in bash cat date sed grep basename dirname tr wc git mkdir rm mktemp head paste; do
     p=$(command -v "$t") && ln -sf "$p" "$d/$t" 2>/dev/null
   done
-  # Prove the masked PATH actually works before any verdict rests on it.
-  if PATH="$d" dirname /a/b >/dev/null 2>&1 && [ -n "$(PATH="$d" dirname /a/b 2>/dev/null)" ]; then
-    printf '%s' "$d"
-  else
-    rm -rf "$d"
-  fi
+  if [ -n "$(PATH="$d" dirname /a/b 2>/dev/null)" ]; then printf '%s' "$d"; else rm -rf "$d"; fi
 }
 run_nojq() { # payload proj [hook=dod-gate.sh] -> sets RC, OUT; NOJQ_SKIP if it cannot run
   NOJQ_SKIP=""
@@ -66,10 +75,10 @@ run_nojq() { # payload proj [hook=dod-gate.sh] -> sets RC, OUT; NOJQ_SKIP if it 
     OUT=$(printf '%s' "$1" | CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/$hook" 2>&1); RC=$?
     return 0
   fi
-  local d; d=$(mask_jq)
-  if [ -z "$d" ]; then NOJQ_SKIP="cannot build a working PATH without jq in this environment"; RC=0; OUT=""; return 0; fi
-  OUT=$(printf '%s' "$1" | PATH="$d" CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/$hook" 2>&1); RC=$?
-  rm -rf "$d"
+  local masked; masked=$(mask_jq)
+  if [ -z "$masked" ]; then NOJQ_SKIP="cannot make jq unavailable in this environment"; RC=0; OUT=""; return 0; fi
+  OUT=$(printf '%s' "$1" | PATH="$masked" CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/$hook" 2>&1); RC=$?
+  case "$masked" in /tmp/*|"${TMPDIR:-/tmp}"/*) rm -rf "$masked" ;; esac
 }
 assert_nojq() { # name expect_rc [substr]
   if [ -n "$NOJQ_SKIP" ]; then echo "SKIP  $1 ($NOJQ_SKIP)"; return 0; fi
@@ -350,6 +359,45 @@ if command -v jq >/dev/null 2>&1; then
 else
   echo 'SKIP  crlf: jq not installed, cannot build the CRLF shim'
 fi
+
+# ---- REDUCED mode: a gate that cannot read its config still guards defaults ----
+# Neither of these is a Stop hook, so blocking on a missing parser would refuse
+# every Bash call or every edit for the whole session — worse than what it reports.
+# Vanishing silently is worse still: measured, a push to main went straight through.
+red=$(new_repo feature/reduced)
+set_config "$red" '{"protectedBranches":["release/x"],"secrets":{"extraPatterns":["INTERNAL_[A-Z]+_KEY"]}}'
+
+run_nojq '{"tool_input":{"command":"git push origin main"}}' "$red" block-protected-branch.sh
+assert_nojq 'reduced: built-in branch list still blocks main' 2 'REDUCED'
+run_nojq '{"tool_input":{"command":"git push origin feature/reduced"}}' "$red" block-protected-branch.sh
+assert_nojq 'reduced: feature push still allowed' 0
+# the false intercept must not come back through the degraded path
+run_nojq '{"tool_input":{"command":"git commit -m fix-push-main"}}' "$red" block-protected-branch.sh
+assert_nojq 'reduced: a message mentioning push and main is not a push' 0
+
+# Built to avoid writing a complete credential-shaped literal into this file: the
+# gate cannot tell a fixture from the real thing, and blocked an earlier version of
+# this very test.
+awskey="AKIA""7QK4RZTBMN3PDQ2V"
+run_nojq "{\"tool_input\":{\"content\":\"$awskey\"}}" "$red" secret-guard.sh
+assert_nojq 'reduced: built-in secret detector still fires' 2 'REDUCED'
+run_nojq '{"tool_input":{"content":"password: $ADMINPW"}}' "$red" secret-guard.sh
+assert_nojq 'reduced: env-var reference is still not a leak' 0
+run_nojq '{"tool_input":{"content":"INTERNAL_BILLING_KEY"}}' "$red" secret-guard.sh
+assert_nojq 'reduced: custom pattern is lost, and that is allowed' 0
+
+# An explicit off switch must survive reduced mode: the owner disabled the gate.
+set_config "$red" '{"secrets":{"enabled":false}}'
+run_nojq "{\"tool_input\":{\"content\":\"$awskey\"}}" "$red" secret-guard.sh
+assert_nojq 'reduced: enabled=false is still honoured' 0
+
+# The event log used to resolve to the project directory itself when the path
+# could not be read, so every append failed with "Is a directory" on stderr.
+set_config "$red" '{"protectedBranches":["main"]}'
+run_nojq '{"tool_input":{"command":"git push origin main"}}' "$red" block-protected-branch.sh
+if [ -z "$NOJQ_SKIP" ] && printf '%s' "$OUT" | grep -q 'Is a directory'; then
+  echo 'FAIL  reduced: event log path degraded into a directory'; failed=$((failed+1))
+else echo 'PASS  reduced: event log path has a working default'; fi
 
 # ---- code-graph snapshot freshness ----
 gs=$(new_repo feature/graphsnap)
