@@ -17,6 +17,20 @@
 
 disc_config_path() { echo "${CLAUDE_PROJECT_DIR:-.}/.claude/discipline.json"; }
 
+# Read a jq expression LINE BY LINE. The Windows build of jq emits CRLF, and a
+# trailing \r survives every line-wise read: `mapfile -t` and `while read` both
+# keep it. Measured on Git Bash — `.dod.fileGlobs[]?` came back as `*.cs\r`
+# (od -c: * . c s \r \n), so `case b.cs in *.cs<CR>)` never matched and the whole
+# definition-of-done gate silently became a no-op; and with several protected
+# branches configured, only the LAST one was ever enforced, because $() strips the
+# final \r and nothing strips the others.
+#
+# Not applied blanket-wise: single-value reads through $() are already correct,
+# since command substitution drops the trailing newline and its \r with it. Use
+# this only where output is consumed a line at a time — which is exactly where
+# a platform difference would otherwise disable an asset in silence.
+disc_jq_lines() { jq -r "$1" "$2" 2>/dev/null | tr -d '\r'; }
+
 disc_mode() {
   local c; c=$(disc_config_path)
   local m=""

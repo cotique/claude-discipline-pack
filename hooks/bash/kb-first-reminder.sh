@@ -37,7 +37,7 @@ hit=0
 while IFS= read -r term; do
   [ -z "$term" ] && continue
   case "$lower" in *"$(printf '%s' "$term" | tr '[:upper:]' '[:lower:]')"*) hit=1; break ;; esac
-done < <(jq -r '.kb.projectTerms[]?' "$config" 2>/dev/null)
+done < <(disc_jq_lines '.kb.projectTerms[]?' "$config")
 [ "$hit" -eq 0 ] && exit 0
 
 # Advisory asset: the event records that the nudge fired. Whether the nudged

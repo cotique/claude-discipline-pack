@@ -312,6 +312,45 @@ else
   echo 'SKIP  deps: with jq, precompact still persists (jq not installed here; CI covers it)'
 fi
 
+# ---- CRLF from a Windows jq build must not disable a gate ----
+# The Windows build of jq emits CRLF and a trailing \r survives every line-wise
+# read, so `case b.cs in *.cs<CR>)` never matches. Measured before the fix: the
+# whole DoD gate was a silent no-op, and with several protected branches only the
+# LAST was enforced ($() strips the final \r and nothing strips the others).
+# On Linux jq emits LF, so the defect cannot occur naturally here — it is injected
+# with a shim, which makes the platform difference reproducible on every runner.
+crlf_shim() { # -> echoes a PATH dir whose `jq` emits CRLF like the Windows build
+  local d; d=$(mktemp -d); local real; real=$(command -v jq)
+  cat > "$d/jq" <<SHIM
+#!/usr/bin/env bash
+"$real" "\$@" | tr -d '\r' | sed 's/\$/\r/'
+SHIM
+  chmod +x "$d/jq"; printf '%s' "$d"
+}
+if command -v jq >/dev/null 2>&1; then
+  shim=$(crlf_shim)
+  crlf=$(new_repo feature/crlfjq)
+  set_config "$crlf" '{"protectedBranches":["main","master","develop"],"secrets":{"enabled":true,"extraPatterns":["INTERNAL_[A-Z]+_KEY"]},"dod":{"fileGlobs":["*.cs"],"checks":[{"name":"c","command":"echo boom; false"}]}}'
+  echo 'class X {}' > "$crlf/a.cs"
+  rc_of() { # hook payload -> RC, OUT   (with the CRLF-emitting jq first on PATH)
+    OUT=$(printf '%s' "$2" | PATH="$shim:$PATH" CLAUDE_PROJECT_DIR="$crlf" bash "$hooks/$1" 2>&1); RC=$?
+  }
+  rc_of dod-gate.sh '{"stop_hook_active":false}'
+  assert 'crlf: dod-gate still blocks (not a silent no-op)' 2 'boom'
+  # first entry in the list: the one $() cannot rescue
+  rc_of block-protected-branch.sh '{"tool_input":{"command":"git push origin main"}}'
+  assert 'crlf: first protected branch is enforced' 2
+  rc_of block-protected-branch.sh '{"tool_input":{"command":"git push origin develop"}}'
+  assert 'crlf: last protected branch is enforced' 2
+  rc_of block-protected-branch.sh '{"tool_input":{"command":"git push origin feature/crlfjq"}}'
+  assert 'crlf: feature push still allowed' 0
+  rc_of secret-guard.sh '{"tool_input":{"content":"INTERNAL_BILLING_KEY"}}'
+  assert 'crlf: custom secret pattern still matches' 2
+  rm -rf "$shim"
+else
+  echo 'SKIP  crlf: jq not installed, cannot build the CRLF shim'
+fi
+
 # ---- code-graph snapshot freshness ----
 gs=$(new_repo feature/graphsnap)
 node "$root/bin/discipline.mjs" init --target "$gs" --components hooks >/dev/null

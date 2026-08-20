@@ -44,6 +44,6 @@ while IFS=$'\t' read -r glob check_cmd; do
       fi
       ;;
   esac
-done < <(jq -r '.format // {} | to_entries[] | [.key, .value] | @tsv' "$config" 2>/dev/null)
+done < <(disc_jq_lines '.format // {} | to_entries[] | [.key, .value] | @tsv' "$config")
 
 exit 0

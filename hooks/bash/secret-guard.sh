@@ -99,7 +99,7 @@ if [ -f "$config" ]; then
     [ -z "$p" ] && continue
     n=$((n + 1))
     check "project pattern $n" "$p"
-  done < <(jq -r '.secrets.extraPatterns[]?' "$config" 2>/dev/null)
+  done < <(disc_jq_lines '.secrets.extraPatterns[]?' "$config")
 fi
 
 [ -z "$hits" ] && exit 0

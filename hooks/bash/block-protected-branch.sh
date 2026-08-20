@@ -23,7 +23,9 @@ config="$proj/.claude/discipline.json"
 branches=""
 block_all_push=""
 if [ -f "$config" ]; then
-  branches=$(jq -r '.protectedBranches[]?' "$config" 2>/dev/null)
+  # Multi-line: $() strips only the final , so without this only the last
+  # protected branch was ever enforced on Windows.
+  branches=$(disc_jq_lines '.protectedBranches[]?' "$config")
   block_all_push=$(jq -r 'if .blockAllPush then "1" else "" end' "$config" 2>/dev/null)
 fi
 [ -z "$branches" ] && branches=$'main\nmaster\ndevelop\nrelease/*'

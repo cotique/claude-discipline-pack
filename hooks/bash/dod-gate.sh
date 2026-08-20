@@ -60,7 +60,7 @@ export DISC_SESSION_ID
 jq -e '.dod.checks | length > 0' "$config" >/dev/null 2>&1 || exit 0
 
 # Any uncommitted (staged or unstaged) file matching a DoD glob?
-mapfile -t globs < <(jq -r '.dod.fileGlobs[]?' "$config" 2>/dev/null)
+mapfile -t globs < <(disc_jq_lines '.dod.fileGlobs[]?' "$config")
 [ "${#globs[@]}" -eq 0 ] && globs=("*")
 
 touched=0
@@ -103,7 +103,7 @@ while IFS=$'\t' read -r pre_name pre_cmd pre_remedy; do
     } >&2
     exit 2
   fi
-done < <(jq -r '.dod.preconditions[]? | [.name, .command, (.remedy // "")] | @tsv' "$config" 2>/dev/null)
+done < <(disc_jq_lines '.dod.preconditions[]? | [.name, .command, (.remedy // "")] | @tsv' "$config")
 
 failures=""
 while IFS=$'\t' read -r name check_cmd; do
@@ -114,7 +114,7 @@ while IFS=$'\t' read -r name check_cmd; do
 $(tail -n 30 /tmp/dod-gate-out.$$)"
   fi
   rm -f /tmp/dod-gate-out.$$
-done < <(jq -r '.dod.checks[] | [.name, .command] | @tsv' "$config" 2>/dev/null)
+done < <(disc_jq_lines '.dod.checks[] | [.name, .command] | @tsv' "$config")
 # durationMs is the gate's price: what it costs at every session end. Weigh it
 # against intercepts when deciding whether the gate keeps its place.
 duration_ms=$(( $(date +%s) * 1000 - start_ms ))
