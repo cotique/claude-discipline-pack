@@ -195,6 +195,28 @@ and `secret-guard` should fail *closed* instead. Their silent absence is the
 security-relevant one, but blocking on a missing parser means refusing every
 shell command in the session. That trade belongs to whoever owns the repo.
 
+### 4. A dependency that is *present* can still differ by platform
+
+Rule 3 is about a tool being absent. This one is worse, because everything looks
+installed and working. The Windows build of `jq` emits CRLF, and a trailing `\r`
+survives every line-wise read, so `case b.cs in *.cs<CR>)` never matched: the
+definition-of-done gate was a complete no-op on Windows — no block, no message —
+while reporting nothing wrong. With several protected branches configured, only
+the last one was enforced. Custom secret patterns never matched.
+
+Two habits that would have caught it:
+
+- **Normalise at the boundary, not at the use site.** Strip `\r` on every capture
+  of external-tool output, including single-value ones. `$()` looks safe and is
+  not: it strips trailing *newlines*, and the carriage return sits in front of
+  them — so an empty config value arrived as `"\r"`, `[ -n ... ]` saw a value, and
+  the gate switched itself on. It happens to work on Git Bash, which drops the
+  `\r`; depending on that is depending on a quirk.
+- **Make the platform difference reproducible on every runner.** The Linux CI
+  could not see this bug at all, because Linux `jq` emits LF. The regression test
+  injects a `jq` shim that emits CRLF, so the failure exists everywhere the suite
+  runs rather than only on the machine that reported it.
+
 ## Releasing a change to the plugin
 
 Pushing to `main` does **not** deliver anything. The marketplace entry carries the
