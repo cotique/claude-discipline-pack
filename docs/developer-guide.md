@@ -128,11 +128,6 @@ Expect four parts. If you get prose, ask again:
 to put there stopped looking. Ask: *"what would you need to check this end to
 end?"*
 
-The same four parts belong on the ticket, not just in a terminal that gets
-closed — see [evidence-comment-template.md](evidence-comment-template.md) for the
-template, a filled example, what screenshots do and do not prove, and what must
-never go in a tracker comment.
-
 ### Red flags and what to say back
 
 | What you read | Say this |
