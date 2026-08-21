@@ -209,6 +209,11 @@ output and the exact sentence to say back to each one, a ten-minute review
 checklist for AI-written code, when to pull the handbrake, what never to
 delegate, and what each gate means when it blocks you.
 
+[docs/evidence-comment-template.md](docs/evidence-comment-template.md) is the
+same four-part report moved to where the work is tracked: template, filled
+example, what a screenshot does and does not prove, and what must never go into a
+tracker comment.
+
 ## Scaling it up
 
 - **When to add a code-structure graph** (and what to point it at), and

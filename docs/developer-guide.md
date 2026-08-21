@@ -20,7 +20,7 @@ You already know how to review code. The problem is what your reviewing reflex
 is tuned to.
 
 **Human-written mistakes usually look wrong.** Sloppy naming, copy-paste
-残 left behind, an obvious missing null check, a function that grew hair. Your
+leftovers, an obvious missing null check, a function that grew hair. Your
 eye is trained to find the mess and slow down where the mess is.
 
 **This produces code that looks right and is sometimes wrong.** Clean naming,
@@ -127,6 +127,11 @@ Expect four parts. If you get prose, ask again:
 **An empty "not verified" is a claim, not an achievement.** An agent with nothing
 to put there stopped looking. Ask: *"what would you need to check this end to
 end?"*
+
+The same four parts belong on the ticket, not just in a terminal that gets
+closed — see [evidence-comment-template.md](evidence-comment-template.md) for the
+template, a filled example, what screenshots do and do not prove, and what must
+never go in a tracker comment.
 
 ### Red flags and what to say back
 
