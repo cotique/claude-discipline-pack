@@ -94,10 +94,20 @@ is_placeholder() {  # $1 = matched sample
   return 1
 }
 
+# A value that is an expression is code, not a credential. Measured on a real
+# session: an async C# signature whose cancellation parameter carries a
+# `default(...)` initialiser, and a property assigned from a getter call, were both
+# read as assigned credentials — which blocked every write to that file until the
+# code was rewritten. A call expression is long, so the length guard does not help.
+looks_like_expression() {
+  printf '%s' "$1" | grep -Eq '[A-Za-z0-9_)][(<]|[<>]'
+}
+
 hits=""
 check() {  # $1 = label, $2 = pattern
   while IFS= read -r sample; do
     [ -z "$sample" ] && continue
+    looks_like_expression "$sample" && continue
     is_placeholder "$sample" || { case "$hits" in *"$1"*) ;; *) hits="${hits}${1}, ";; esac; return 0; }
   done < <(printf '%s' "$text" | grep -Eoi -e "$2" 2>/dev/null)
 }
@@ -110,16 +120,25 @@ check 'Google API key'          'AIza[0-9A-Za-z_-]{35}'
 check 'JWT'                     'eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}'
 check 'Azure storage key'       'AccountKey[[:space:]]*=[[:space:]]*[A-Za-z0-9+/]{40,}={0,2}'
 check 'credential in a URL'     '[a-z][a-z0-9+.-]*://[^:/[:space:]@]+:[^@/[:space:]]{6,}@'
-check 'assigned password/token' '(password|passwd|pwd|secret|api[-_]?key|apikey|access[-_]?token|auth[-_]?token|client[-_]?secret)[[:space:]]*[:=][[:space:]]*"?[^[:space:]"'"'"'`,;<>${}%]{8,}'
+# \b for parity with the PowerShell twin, which has always had it here. Without
+# boundaries the keyword matched inside a longer identifier, so a camelCase property
+# name containing one of these words read as an assignment of a credential.
+check 'assigned password/token' '\b(password|passwd|pwd|secret|api[-_]?key|apikey|access[-_]?token|auth[-_]?token|client[-_]?secret)\b[[:space:]]*[:=][[:space:]]*"?[^[:space:]"'"'"'`,;<>${}%]{8,}'
 
-# Credentials pasted in prose ("the db password is hunter2") — this is how a human
-# leaks one in chat, and every code-shaped pattern above misses it. The value must
-# look like a secret (contains a digit, or is long) or "the token is invalid" fires.
-narrative='(password|passwd|pwd|secret|api[-_ ]?key|apikey|token|credential)[[:space:]]*(is|are|=|:)[[:space:]]*"?[^[:space:]"'"'"'`,;]{8,}'
+# Credentials pasted in prose — this is how a human leaks one in chat, and every
+# code-shaped pattern above misses it. The value must look like a secret (contains a
+# digit, or is long) or a sentence like "the token is invalid" fires.
+#
+# \b matters, and its absence was the other half of the same defect: without
+# boundaries the keyword matched INSIDE a longer identifier, so any camelCase name
+# ending in one of these words read as an assignment. The PowerShell twin already
+# had the boundaries; this one did not, and the two are documented as identical.
+narrative='\b(password|passwd|pwd|secret|api[-_ ]?key|apikey|token|credential)\b[[:space:]]*(is|are|=|:)[[:space:]]*"?[^[:space:]"'"'"'`,;]{8,}'
 while IFS= read -r sample; do
   [ -z "$sample" ] && continue
   val=$(printf '%s' "$sample" | sed -E 's/.*(is|are|=|:)[[:space:]]*"?//')
   [ -z "$val" ] && continue
+  looks_like_expression "$val" && continue
   if ! printf '%s' "$val" | grep -q '[0-9]' && [ ${#val} -lt 16 ]; then continue; fi
   is_placeholder "$val" || { case "$hits" in *'credential in prose'*) ;; *) hits="${hits}credential in prose, ";; esac; }
 done < <(printf '%s' "$text" | grep -Eoi -e "$narrative" 2>/dev/null)

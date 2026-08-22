@@ -87,7 +87,8 @@ A gated workflow — each command is a phase with hard boundaries:
 
 | Hook | Event | Behavior |
 |---|---|---|
-| `block-protected-branch` | PreToolUse (Bash) | Blocks commits/pushes/resets/deletes that would touch a protected branch; optional `blockAllPush` makes *every* push a human action |
+| `block-protected-branch` | PreToolUse (Bash) | Blocks commits and resets that would land on a protected branch, and local branch deletion. **Pushes are warned about, not blocked** — they are refused by `pre-push` below, which is handed the real refs |
+| `pre-push` | git hook (`.githooks/pre-push`) | **Refuses** pushes to a protected branch, tag pushes, and protected-branch deletion. Reads the refs git gives it on stdin, so there is no command text to misread; optional `blockAllPush` makes *every* push a human action. One implementation for both platforms — git runs it through `sh` |
 | `dod-gate` | Stop | If uncommitted changes match configured globs, build/test checks must pass before the session may end |
 | `format-postcheck` | PostToolUse (Edit/Write) | Runs your formatter check on the edited file, feeds violations back to Claude |
 | `secret-guard` | PreToolUse (Bash/Edit/Write) + UserPromptSubmit | **Blocks** credential material heading into a file or a command; **warns only** when a human pastes one into the chat, because by then the transcript already has it and the useful action is rotating it |
@@ -220,8 +221,21 @@ both are covered in [docs/adoption-guide.md](docs/adoption-guide.md).
 ## Design notes
 
 - **Blocking beats prompting.** `CLAUDE.md` rules are advisory; an exit-2 hook
-  is not. Anything that must never happen (push to `main`, ending on a red
-  build) belongs in a hook, not in prose.
+  is not. Anything that must never happen (ending on a red build, a commit
+  landing on `main`) belongs in a hook, not in prose.
+- **Put the block where the data is authoritative.** A `PreToolUse` hook only
+  ever sees the text of a command that has not run, and every defect the branch
+  gate had was that same defect — corrected once for quoting (a commit message
+  containing "push main" read as a push) and again for chaining, where a real
+  push hidden in a later segment was missed while a foreign token in another
+  segment was blocked. Both happened live. So pushes moved to `pre-push`, which
+  git hands the actual refs, and the `PreToolUse` layer only warns. A false
+  positive in an advisory layer costs a sentence; in a blocking layer it costs a
+  session, which is how gates end up switched off. Three layers, and the
+  difference is what each is allowed to know — see
+  [docs/adoption-guide.md](docs/adoption-guide.md) for the table, including the
+  limitation that branch protection on a **private** GitHub repository needs a
+  paid plan, so an unapproved *merge* cannot be prevented locally at all.
 - **Feedback loops close on Claude, not on you.** `format-postcheck` and
   `dod-gate` report failures *to the agent*, which fixes them in-session —
   you review clean diffs.

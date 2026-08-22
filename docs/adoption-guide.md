@@ -232,7 +232,43 @@ Two habits that would have caught it:
   injects a `jq` shim that emits CRLF, so the failure exists everywhere the suite
   runs rather than only on the machine that reported it.
 
-## Releasing a change to the plugin
+### 5. Put enforcement where the data is authoritative
+
+The first four rules are about writing a gate well. This one is about not writing
+it at all when a better layer exists.
+
+A `PreToolUse` gate has to decide from a shell command line, and every defect this
+pack's branch gate ever had was the same defect: no model of shell structure. It was
+corrected once for quoting — a commit message containing "push main" read as a push
+— and again for separators, where a token in a later segment of a chained command
+was read as a push target while a *real* push in a later segment was missed
+entirely. Both were observed live. The next instances were already predictable:
+`$(...)`, `bash -c "git push …"`, `xargs`, backgrounding, multi-line scripts,
+aliases. Patching instances does not end a class.
+
+Three layers, and the difference between them is what they are allowed to know:
+
+| Layer | Knows | Can be routed around |
+|---|---|---|
+| Forge rules (branch protection / rulesets) | The server's own decision: approvals, required checks, who may push, force-push and deletion bans, tag protection | No |
+| `pre-push` git hook | The **real refs**, handed to it by git on stdin — no text to misread, and tags arrive as `refs/tags/*` for free | Only by removing the hook |
+| `PreToolUse` hook | The text of a command that has not run yet | Trivially |
+
+So the branch gate splits: `pre-push` refuses, and `PreToolUse` only warns for
+pushes. A false positive in an advisory layer costs a sentence; in a blocking layer
+it costs a session, and that is how gates get switched off. `PreToolUse` keeps its
+`exit 2` for exactly the cases `pre-push` cannot see — a commit landing on a
+protected branch, and a local branch deletion.
+
+**A limitation worth writing down rather than discovering.** The top layer is not
+always available. On GitHub, branch protection and rulesets on a **private**
+repository require a paid plan; the API answers `403 Upgrade to GitHub Pro or make
+this repository public`. Measured on this project: available and unconfigured on the
+public repo, unavailable on the private one. Where the top layer is missing, an
+"unapproved merge" cannot be prevented at all — a merge happens on the server, and
+no local hook is in the path. What remains is the local hook for pushes plus a
+human agreement for merges, and the honest thing is to say so rather than describe
+a control that is not installed.
 
 Pushing to `main` does **not** deliver anything. The marketplace entry carries the
 version, so `claude plugin update` sees a new release only when

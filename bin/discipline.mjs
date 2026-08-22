@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import url from 'node:url';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 
 const PACK = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const MANIFEST_REL = path.join('.claude', 'discipline-manifest.json');
@@ -74,8 +74,36 @@ function packFiles(components) {
         }
       }
     }
+    // The git hook is vendored into a TRACKED directory rather than .git/hooks,
+    // which is neither tracked nor copied by clone. `core.hooksPath` then points
+    // git at it — see installGitHooksPath. One implementation serves both
+    // platforms: git invokes it through sh, so there is no PowerShell twin.
+    pairs.push([path.join(PACK, 'hooks', 'git', 'pre-push'), '.githooks/pre-push']);
   }
   return pairs;
+}
+
+/**
+ * Point git at the vendored hook directory, and report rather than assume.
+ * Returns a short status string for the caller to print.
+ *
+ * Why this is not optional: the pre-push hook is the authoritative half of
+ * protected-branch enforcement, and the PreToolUse gate only warns for pushes on
+ * the strength of it being installed. If this step is skipped, the loud layer is
+ * gone and nothing has replaced it.
+ */
+function installGitHooksPath(target) {
+  const dir = path.join(target, '.githooks');
+  const hook = path.join(dir, 'pre-push');
+  if (!fs.existsSync(hook)) return 'pre-push: NOT installed (file missing)';
+  try {
+    fs.chmodSync(hook, 0o755);
+  } catch { /* Windows filesystems have no execute bit; git runs it through sh anyway */ }
+  const r = spawnSync('git', ['-C', target, 'config', 'core.hooksPath', '.githooks'], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    return `pre-push: installed but core.hooksPath NOT set (${(r.stderr || '').trim() || 'git failed'})`;
+  }
+  return 'pre-push: installed, core.hooksPath=.githooks';
 }
 
 /** Approximate LOC of git-tracked source files; null when not measurable. */
@@ -177,6 +205,8 @@ function apply(opts) {
       }
     }
   }
+
+  if (manifest.components.includes('hooks')) console.log(installGitHooksPath(target));
 
   saveManifest(target, { ...manifest, packVersion: packVersion(), files });
   console.log(`apply complete (pack ${packVersion()})`);
