@@ -10,7 +10,7 @@
       "name": "discipline-pack",
       "source": "./",
       "description": "Gated workflow commands and enforcement hooks for agentic coding.",
-      "version": "0.3.5",
+      "version": "0.3.6",
       "author": {
         "name": "cotique"
       }
