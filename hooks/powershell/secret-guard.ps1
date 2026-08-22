@@ -59,6 +59,10 @@ $patterns = [ordered]@{
     'JWT'                      = 'eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}'
     'Azure storage key'        = '(?i)AccountKey\s*=\s*[A-Za-z0-9+/]{40,}={0,2}'
     'credential in a URL'      = '(?i)[a-z][a-z0-9+.\-]*://[^:/\s@]+:[^@/\s]{6,}@'
+    # Parentheses are deliberately NOT excluded here. Excluding them truncated the
+    # match to just the callee name, which then looked like an ordinary literal and
+    # slipped past the expression guard below. The value must keep its bracket so the
+    # guard can recognise it as code.
     'assigned password/token'  = '(?i)\b(password|passwd|pwd|secret|api[-_]?key|apikey|access[-_]?token|auth[-_]?token|client[-_]?secret)\b\s*[:=]\s*["'']?[^\s"''`,;<>${}%]{8,}'
 }
 if ($cfg -and $cfg.secrets -and $cfg.secrets.extraPatterns) {
@@ -66,10 +70,20 @@ if ($cfg -and $cfg.secrets -and $cfg.secrets.extraPatterns) {
     foreach ($p in @($cfg.secrets.extraPatterns)) { $i++; $patterns["project pattern $i"] = $p }
 }
 
+# A value that is an expression is code, not a credential. Measured on a real
+# session: an async C# signature whose cancellation parameter carries a
+# `default(...)` initialiser, and a property assigned from a getter call, were both
+# read as assigned credentials — which blocked every write to that file until the
+# code was rewritten. A call expression is long, so the length guard does not help.
+# Applied to every pattern, exactly as the bash twin does: for AWS/GitHub/JWT shapes
+# an expression never occurs, so it costs nothing there.
+$expressionShaped = '[A-Za-z0-9_)][(<]|[<>]'
+
 $hits = @()
 foreach ($name in $patterns.Keys) {
     foreach ($m in [regex]::Matches($text, $patterns[$name])) {
         $sample = $m.Value
+        if ($sample -match $expressionShaped) { continue }
         $isPlaceholder = $false
         foreach ($ig in $ignore) { if ($sample -match $ig) { $isPlaceholder = $true; break } }
         if (-not $isPlaceholder) { $hits += $name }
@@ -80,8 +94,15 @@ foreach ($name in $patterns.Keys) {
 # value must look like a secret (contains a digit, or is long) or every "the
 # token is invalid" would fire.
 $narrative = '(?i)\b(password|passwd|pwd|secret|api[-_ ]?key|apikey|token|credential)\b[ \t]*(?:is|are|=|:)[ \t]*["'']?([^\s"''`,;]{8,})'
+
+# A value that is an expression is code, not a credential. Measured on a real
+# session: an async C# signature whose cancellation parameter carries a
+# `default(...)` initialiser was read as an assigned credential, which blocked every
+# write to that file until the code was rewritten. The value cleared the length
+# guard because a call expression is long. Kept in step with the bash twin.
 foreach ($m in [regex]::Matches($text, $narrative)) {
     $val = $m.Groups[2].Value
+    if ($val -match $expressionShaped) { continue }
     if (-not ($val -match '\d' -or $val.Length -ge 16)) { continue }
     $skip = $false
     foreach ($ig in $ignore) { if ($val -match $ig) { $skip = $true; break } }

@@ -46,10 +46,15 @@ $baseCfg = '{"protectedBranches":["main","master","develop","release/*"]}'
 $feat = New-TestRepo 'feature/test'
 Set-Config $feat $baseCfg
 function BP([string]$cmd) { Invoke-Hook 'block-protected-branch.ps1' ('{"tool_input":{"command":"' + $cmd + '"}}') $feat }
-Assert 'block: push to main'            (BP 'git push origin main') 2
+Assert 'warn: push to main advises, pre-push refuses' (BP 'git push origin main') 0 'pre-push'
 Assert 'block: push feature ok'         (BP 'git push origin feature/test') 0
-Assert 'block: force refspec develop'   (BP 'git push --force origin HEAD:refs/heads/develop') 2
-Assert 'block: delete develop'          (BP 'git push origin :develop') 2
+Assert 'warn: force refspec develop'    (BP 'git push --force origin HEAD:refs/heads/develop') 0 'pre-push'
+Assert 'warn: delete develop'           (BP 'git push origin :develop') 0 'pre-push'
+# Still exit 2, deliberately: neither of these reaches a remote, so git never
+# offers a hook with authoritative data. Everything push-shaped is a warning here
+# and a refusal in .githooks/pre-push. The pre-push hook itself is exercised with
+# real pushes in tests/run.sh — git runs it through sh, so there is one
+# implementation and one test location, not a per-platform pair.
 Assert 'block: branch -D master'        (BP 'git branch -D master') 2
 Assert 'block: non-git ignored'         (BP 'npm test') 0
 
@@ -63,11 +68,23 @@ Assert 'block: commit on main' (Invoke-Hook 'block-protected-branch.ps1' '{"tool
 Assert 'block: "push" inside a commit message is not a push' (BP 'git commit -m \"push main fix\"') 0
 Assert 'block: "main" inside a message is not a target'      (BP 'git commit -m \"block push to main\"') 0
 Assert 'block: "branch -D main" inside a message'            (BP 'git commit -m \"branch -D main is bad\"') 0
-Assert 'block: git -C elsewhere push still caught'           (BP 'git -C /other push origin master') 2
-Assert 'block: -c option before subcommand still parsed'     (BP 'git -c user.name=x push origin main') 2
+Assert 'warn: git -C elsewhere push still seen'              (BP 'git -C /other push origin master') 0 'pre-push'
+Assert 'warn: -c option before subcommand still parsed'      (BP 'git -c user.name=x push origin main') 0 'pre-push'
 
 Set-Config $feat '{"protectedBranches":["main"],"blockAllPush":true}'
-Assert 'block: blockAllPush stops feature push' (BP 'git push origin feature/test') 2
+Assert 'warn: blockAllPush warns on a feature push' (BP 'git push origin feature/test') 0 'pre-push'
+# Chaining. Deciding from the first git invocation in the string failed both ways,
+# and both were observed on a live setup: the bypass pushed to a protected branch
+# for real, and the false intercept blocked a legitimate push because a later
+# segment merely mentioned a protected name.
+Assert 'chain: push after another git command is still seen' (BP 'git remote set-url origin git@github.com:o/r.git && git push origin main') 0 'pre-push'
+Assert 'chain: push in a later segment is seen'   (BP 'git status && git push origin main') 0 'pre-push'
+Assert 'chain: semicolon separator is seen'       (BP 'echo hi; git push origin main') 0 'pre-push'
+Assert 'chain: wrapper before git still parsed'   (BP 'timeout 90 git push origin main') 0 'pre-push'
+Assert 'chain: --base main in another segment is not a push' (BP 'git push origin feature/test && gh pr create --base main') 0
+Assert 'chain: a path under a wildcard in another segment is not a push' (BP 'git push origin feature/test && ls release/notes') 0
+Assert 'chain: feature push with a trailing command is allowed' (BP 'git push origin feature/test; echo done') 0
+
 Assert 'block: blockAllPush allows commit'      (BP 'git commit -m x') 0
 Set-Config $feat $baseCfg
 
@@ -133,21 +150,23 @@ else { Write-Host 'FAIL  drift: real edit missed'; $script:failed++ }
 $sh = New-TestRepo 'feature/shadow'
 Set-Config $sh '{"mode":"shadow","protectedBranches":["main"],"events":{"enabled":true}}'
 $r = Invoke-Hook 'block-protected-branch.ps1' '{"session_id":"s1","tool_input":{"command":"git push origin main"}}' $sh
-Assert 'shadow: push to main allowed but logged' $r 0 'SHADOW'
+Assert 'shadow: push to main warns and is logged' $r 0 'pre-push'
 $log = Join-Path $sh '.claude\discipline-events.jsonl'
 if (Test-Path $log) {
     $ev = Get-Content $log | Select-Object -First 1 | ConvertFrom-Json
-    if ($ev.event -eq 'would-block' -and $ev.mode -eq 'shadow' -and $ev.sessionId -eq 's1') {
-        Write-Host 'PASS  shadow: event line has would-block/shadow/sessionId'
+    # `warn-push` regardless of mode: shadow suppresses blocking, and this layer has
+    # no blocking left to suppress for pushes. The event must still be recorded.
+    if ($ev.event -eq 'warn-push' -and $ev.mode -eq 'shadow' -and $ev.sessionId -eq 's1') {
+        Write-Host 'PASS  shadow: event line has warn-push/shadow/sessionId'
     } else { Write-Host "FAIL  shadow: unexpected event $($ev | ConvertTo-Json -Compress)"; $script:failed++ }
 } else { Write-Host 'FAIL  shadow: no event log written'; $script:failed++ }
 
 Set-Config $sh '{"mode":"enforce","protectedBranches":["main"],"events":{"enabled":true}}'
-Assert 'enforce: push to main blocked' (Invoke-Hook 'block-protected-branch.ps1' '{"tool_input":{"command":"git push origin main"}}' $sh) 2 'BLOCKED'
+Assert 'enforce: push to main warns, pre-push refuses' (Invoke-Hook 'block-protected-branch.ps1' '{"tool_input":{"command":"git push origin main"}}' $sh) 0 'pre-push'
 $lines = @(Get-Content $log)
-if ($lines.Count -ge 2 -and ($lines[-1] | ConvertFrom-Json).event -eq 'block') {
-    Write-Host 'PASS  enforce: block event appended'
-} else { Write-Host 'FAIL  enforce: block event missing'; $script:failed++ }
+if ($lines.Count -ge 2 -and ($lines[-1] | ConvertFrom-Json).event -eq 'warn-push') {
+    Write-Host 'PASS  enforce: warn-push event appended'
+} else { Write-Host 'FAIL  enforce: warn-push event missing'; $script:failed++ }
 
 Set-Config $sh '{"protectedBranches":["main"],"events":{"enabled":false}}'
 $before = @(Get-Content $log).Count
@@ -262,6 +281,11 @@ Assert 'secrets: windows var ok'       (SG '{"tool_input":{"content":"password=%
 Assert 'secrets: placeholder ok'       (SG '{"tool_input":{"content":"password: changeme-please"}}') 0
 Assert 'secrets: xxx ok'               (SG '{"tool_input":{"content":"api_key: xxxxxxxxxxxx"}}') 0
 Assert 'secrets: process.env ok'       (SG '{"tool_input":{"content":"const t = process.env.AUTH_TOKEN"}}') 0
+# Ordinary code must not read as a credential. The C# shape below blocked every write
+# to a file for a whole session, and the only way past it was rewriting valid code.
+Assert 'secrets: C# cancellation default is not a credential' (SG '{"tool_input":{"content":"public async Task RunAsync(CancellationToken cancellationToken = default(CancellationToken))"}}') 0
+Assert 'secrets: keyword inside a longer identifier is not a credential' (SG '{"tool_input":{"content":"var refreshToken = BuildTokenFromConfiguration(settings)"}}') 0
+Assert 'secrets: a getter call is not a credential' (SG '{"tool_input":{"content":"var secret = GetSecret(configuration[\"KeyVaultName\"])"}}') 0
 Assert 'secrets: ordinary code ok'     (SG '{"tool_input":{"command":"npm run build"}}') 0
 # a pasted credential is warned about, never blocked: it is already on disk
 $r = SG '{"prompt":"the db password is s3cretPassw0rd, use it"}'

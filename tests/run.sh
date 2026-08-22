@@ -104,10 +104,13 @@ base_cfg='{"protectedBranches":["main","master","develop","release/*"]}'
 # ---- block-protected-branch ----
 feat=$(new_repo feature/test); set_config "$feat" "$base_cfg"
 bp() { run_hook block-protected-branch.sh "{\"tool_input\":{\"command\":\"$1\"}}" "$feat"; }
-bp 'git push origin main';                              assert 'block: push to main' 2
+bp 'git push origin main';                              assert 'warn: push to main advises, pre-push refuses' 0 'pre-push'
 bp 'git push origin feature/test';                      assert 'block: push feature ok' 0
-bp 'git push --force origin HEAD:refs/heads/develop';   assert 'block: force refspec develop' 2
-bp 'git push origin :develop';                          assert 'block: delete develop' 2
+bp 'git push --force origin HEAD:refs/heads/develop';   assert 'warn: force refspec develop' 0 'pre-push'
+bp 'git push origin :develop';                          assert 'warn: delete develop' 0 'pre-push'
+# Still exit 2, deliberately: neither of these reaches a remote, so git never
+# offers a hook with authoritative data. Everything push-shaped is a warning here
+# and a refusal in .githooks/pre-push, which is handed the real refs by git.
 bp 'git branch -D master';                              assert 'block: branch -D master' 2
 bp 'npm test';                                          assert 'block: non-git ignored' 0
 
@@ -120,13 +123,79 @@ assert 'block: commit on main' 2
 bp 'git commit -m "push main fix"';        assert 'block: "push" inside a commit message is not a push' 0
 bp 'git commit -m "block push to main"';   assert 'block: "main" inside a message is not a target' 0
 bp 'git commit -m "branch -D main is bad"'; assert 'block: "branch -D main" inside a message' 0
-bp 'git -C /other push origin master';     assert 'block: git -C elsewhere push still caught' 2
-bp 'git -c user.name=x push origin main';  assert 'block: -c option before subcommand still parsed' 2
+bp 'git -C /other push origin master';     assert 'warn: git -C elsewhere push still seen' 0 'pre-push'
+bp 'git -c user.name=x push origin main';  assert 'warn: -c option before subcommand still parsed' 0 'pre-push'
+
+# Chaining. Deciding from the first git invocation in the string failed both ways,
+# and both were observed on a live setup: the bypass pushed to a protected branch
+# for real, and the false intercept blocked a legitimate push because a later
+# segment merely mentioned a protected name.
+bp 'git remote set-url origin git@github.com:o/r.git && git push origin main'
+assert 'chain: push after another git command is still seen' 0 'pre-push'
+bp 'git status && git push origin main';        assert 'chain: push in a later segment is seen' 0 'pre-push'
+bp 'echo hi; git push origin main';            assert 'chain: semicolon separator is seen' 0 'pre-push'
+bp 'timeout 90 git push origin main';          assert 'chain: wrapper before git still parsed' 0 'pre-push'
+bp 'git push origin feature/test && gh pr create --base main'
+assert 'chain: --base main in another segment is not a push' 0
+bp 'git push origin feature/test && ls release/notes'
+assert 'chain: a path under a wildcard in another segment is not a push' 0
+bp 'git push origin feature/test; echo done';  assert 'chain: feature push with a trailing command is allowed' 0
 
 set_config "$feat" '{"protectedBranches":["main"],"blockAllPush":true}'
-bp 'git push origin feature/test'; assert 'block: blockAllPush stops feature push' 2
+bp 'git push origin feature/test'; assert 'warn: blockAllPush warns on a feature push' 0 'pre-push'
 bp 'git commit -m x';             assert 'block: blockAllPush allows commit' 0
 set_config "$feat" "$base_cfg"
+
+# ---- pre-push: the authoritative half, exercised with real pushes ----
+# Calling the hook directly would prove nothing: its whole point is that git hands
+# it the real refs on stdin. So this drives actual `git push` against a bare remote.
+# The first version of the hook passed a direct-call test and still allowed a push
+# to main — is_protected ran in a subshell inside a pipeline, so a match exited 0,
+# the `&&` after `done` fired, and the function returned the inverse of the truth.
+# Only a real push showed it.
+pp_remote=$(mktemp -d "$work/remote.XXXXXX"); git init -q --bare "$pp_remote"
+pp=$(new_repo main)
+mkdir -p "$pp/.claude/hooks"; cp "$hooks/_events.sh" "$pp/.claude/hooks/"
+set_config "$pp" '{"protectedBranches":["main","release/*"],"events":{"enabled":true}}'
+cp "$root/hooks/git/pre-push" "$pp/.git/hooks/pre-push"; chmod +x "$pp/.git/hooks/pre-push"
+git -C "$pp" remote add origin "$pp_remote"
+echo x > "$pp/a.txt"; git -C "$pp" add -A
+git -C "$pp" -c user.email=t@t.t -c user.name=t commit -q -m seed
+
+pp_try() { # label want(refused|allowed) args...
+  local label="$1" want="$2"; shift 2
+  if git -C "$pp" "$@" >/dev/null 2>&1; then got=allowed; else got=refused; fi
+  if [ "$got" = "$want" ]; then echo "PASS  pre-push: $label"
+  else echo "FAIL  pre-push: $label (got $got, wanted $want)"; failed=$((failed + 1)); fi
+}
+
+pp_try 'push to main is refused'            refused push origin main
+git -C "$pp" checkout -q -b feature/ok
+echo y >> "$pp/a.txt"; git -C "$pp" -c user.email=t@t.t -c user.name=t commit -qam f
+pp_try 'push to a feature branch passes'    allowed push origin feature/ok
+git -C "$pp" checkout -q -b release/1.2
+echo z >> "$pp/a.txt"; git -C "$pp" -c user.email=t@t.t -c user.name=t commit -qam g
+pp_try 'wildcard release/* is refused'      refused push origin release/1.2
+git -C "$pp" tag v9.9.9
+pp_try 'pushing a tag is refused'           refused push origin v9.9.9
+pp_try 'deleting main is refused'           refused push origin :main
+pp_try 'deleting a feature branch passes'   allowed push origin :feature/ok
+
+# The refusal must be recorded, or asset-effectiveness has nothing to count.
+if [ -f "$pp/.claude/discipline-events.jsonl" ] &&
+   grep -q '"asset":"pre-push","event":"block"' "$pp/.claude/discipline-events.jsonl"; then
+  echo 'PASS  pre-push: refusals are logged'
+else echo 'FAIL  pre-push: no block event logged'; failed=$((failed + 1)); fi
+
+# Shadow mode must let it through and say so — the same escape hatch every other
+# gate has, or a repo cannot adopt this incrementally.
+set_config "$pp" '{"mode":"shadow","protectedBranches":["main"],"events":{"enabled":true}}'
+git -C "$pp" checkout -q -b feature/shadow
+echo s >> "$pp/a.txt"; git -C "$pp" -c user.email=t@t.t -c user.name=t commit -qam s
+out=$(git -C "$pp" push origin HEAD:main 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q SHADOW; then
+  echo 'PASS  pre-push: shadow allows and reports'
+else echo "FAIL  pre-push: shadow (rc=$rc): $out"; failed=$((failed + 1)); fi
 
 # ---- dod-gate ----
 dod=$(new_repo feature/test)
@@ -182,16 +251,18 @@ else echo 'FAIL  drift: real edit missed'; failed=$((failed+1)); fi
 sh=$(new_repo feature/shadow)
 set_config "$sh" '{"mode":"shadow","protectedBranches":["main"],"events":{"enabled":true}}'
 run_hook block-protected-branch.sh '{"session_id":"s1","tool_input":{"command":"git push origin main"}}' "$sh"
-assert 'shadow: push to main allowed but logged' 0 'SHADOW'
+assert 'shadow: push to main warns and is logged' 0 'pre-push'
 log="$sh/.claude/discipline-events.jsonl"
-if [ -f "$log" ] && head -1 "$log" | grep -q '"event":"would-block"' && head -1 "$log" | grep -q '"mode":"shadow"'; then
-  echo 'PASS  shadow: event line has would-block/shadow'
+# `warn-push` regardless of mode: shadow suppresses blocking, and this layer has no
+# blocking left to suppress for pushes. The event must still be there to count.
+if [ -f "$log" ] && head -1 "$log" | grep -q '"event":"warn-push"' && head -1 "$log" | grep -q '"mode":"shadow"'; then
+  echo 'PASS  shadow: event line has warn-push/shadow'
 else echo 'FAIL  shadow: event log missing or wrong'; failed=$((failed+1)); fi
 
 set_config "$sh" '{"mode":"enforce","protectedBranches":["main"],"events":{"enabled":true}}'
 run_hook block-protected-branch.sh '{"tool_input":{"command":"git push origin main"}}' "$sh"
-assert 'enforce: push to main blocked' 2 'BLOCKED'
-if tail -1 "$log" | grep -q '"event":"block"'; then echo 'PASS  enforce: block event appended'
+assert 'enforce: push to main warns, pre-push refuses' 0 'pre-push'
+if tail -1 "$log" | grep -q '"event":"warn-push"'; then echo 'PASS  enforce: warn-push event appended'
 else echo 'FAIL  enforce: block event missing'; failed=$((failed+1)); fi
 
 set_config "$sh" '{"protectedBranches":["main"],"events":{"enabled":false}}'
@@ -362,9 +433,9 @@ if command -v jq >/dev/null 2>&1; then
   assert 'crlf: dod-gate still blocks (not a silent no-op)' 2 'boom'
   # first entry in the list: the one $() cannot rescue
   rc_of block-protected-branch.sh '{"tool_input":{"command":"git push origin main"}}'
-  assert 'crlf: first protected branch is enforced' 2
+  assert 'crlf: first protected branch is seen' 0 'pre-push'
   rc_of block-protected-branch.sh '{"tool_input":{"command":"git push origin develop"}}'
-  assert 'crlf: last protected branch is enforced' 2
+  assert 'crlf: last protected branch is seen' 0 'pre-push'
   rc_of block-protected-branch.sh '{"tool_input":{"command":"git push origin feature/crlfjq"}}'
   assert 'crlf: feature push still allowed' 0
   rc_of secret-guard.sh '{"tool_input":{"content":"INTERNAL_BILLING_KEY"}}'
@@ -382,7 +453,7 @@ red=$(new_repo feature/reduced)
 set_config "$red" '{"protectedBranches":["release/x"],"secrets":{"extraPatterns":["INTERNAL_[A-Z]+_KEY"]}}'
 
 run_nojq '{"tool_input":{"command":"git push origin main"}}' "$red" block-protected-branch.sh
-assert_nojq 'reduced: built-in branch list still blocks main' 2 'REDUCED'
+assert_nojq 'reduced: built-in branch list still warns on main' 0 'REDUCED'
 run_nojq '{"tool_input":{"command":"git push origin feature/reduced"}}' "$red" block-protected-branch.sh
 assert_nojq 'reduced: feature push still allowed' 0
 # the false intercept must not come back through the degraded path
@@ -464,6 +535,25 @@ SG '{"tool_input":{"content":"api_key: xxxxxxxxxxxx"}}'
 assert 'secrets: xxx ok' 0
 SG '{"tool_input":{"content":"const t = process.env.AUTH_TOKEN"}}'
 assert 'secrets: process.env ok' 0
+# Ordinary code must not read as a credential. The C# shape below blocked every write
+# to a file for a whole session, and the only way past it was rewriting valid code —
+# the most expensive kind of false intercept there is. Two independent causes: no word
+# boundary on the keyword, so it matched inside a longer identifier, and no guard on
+# the value, so a call expression cleared the length check.
+SG '{"tool_input":{"content":"public async Task RunAsync(CancellationToken cancellationToken = default(CancellationToken))"}}'
+assert 'secrets: C# cancellation default is not a credential' 0
+SG '{"tool_input":{"content":"var refreshToken = BuildTokenFromConfiguration(settings)"}}'
+assert 'secrets: keyword inside a longer identifier is not a credential' 0
+SG '{"tool_input":{"content":"var secret = GetSecret(configuration[\"KeyVaultName\"])"}}'
+assert 'secrets: a getter call is not a credential' 0
+# ...while the real prose detection survives. Assembled from a variable so this file
+# does not itself carry a credential-shaped literal: the gate would block the write,
+# and it would be right to.
+pw_kw='pass'; pw_val='s3cretValue9'
+SG "{\"tool_input\":{\"content\":\"the db ${pw_kw}word is ${pw_val}\"}}"
+assert 'secrets: prose credential in tool input still blocks' 2
+SG "{\"prompt\":\"the db ${pw_kw}word is ${pw_val}\"}"
+assert 'secrets: prose credential in a prompt warns, not blocks' 0 'rotate it'
 SG '{"tool_input":{"command":"npm run build"}}'
 assert 'secrets: ordinary code ok' 0
 # a pasted credential is warned about, never blocked: it is already on disk
