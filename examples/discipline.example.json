@@ -67,5 +67,23 @@
     "$comment": "format-postcheck (PostToolUse): glob -> check command, {file} is replaced with the edited file path.",
     "*.ts": "npx prettier --check \"{file}\"",
     "*.cs": "dotnet format --verify-no-changes --include \"{file}\""
+  },
+
+  "release": {
+    "$comment": "/release. Every key is optional; the step that needs a missing key is skipped out loud rather than guessed at.",
+    "defaultBranch": "main",
+    "tagFormat": "v{version}",
+    "publishWorkflow": "publish.yml",
+    "$commentArtifactCheck": "How a consumer outside the pipeline resolves the published artifact. This is the step that separates 'the workflow exited zero' from 'it is actually out there', so name a command that talks to the registry, not to the build.",
+    "artifactCheck": "curl -sf https://<registry>/<package>/index.json",
+    "$commentConsumers": "Repositories that pin this artifact. Each is bumped with /bump-dependency after the publish is confirmed - a release nobody consumes has not been proven to work.",
+    "consumers": ["../consuming-repo"]
+  },
+
+  "cleanup": {
+    "$comment": "/cleanup. containerLabel is how this project's own containers are recognised - by label or compose project, never by a name that looks similar, because anything unmatched belongs to somebody else's work.",
+    "defaultBranch": "main",
+    "containerLabel": "com.docker.compose.project=my-service",
+    "scratchPaths": [".scratch", "tmp/"]
   }
 }
