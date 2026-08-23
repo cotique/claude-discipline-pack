@@ -49,6 +49,15 @@
     }
   },
 
+  "observability": {
+    "$comment": "Log/metric/trace source used by /debug-incident. Declared the same way as codeGraph, and for the same reason: name the capability, not the vendor. Any one form satisfies it — toolName (an MCP server), skill, or command. Nothing enforces its presence; a missing section means /debug-incident says which source it used by hand instead.",
+    "toolName": "<your-observability-mcp-server>",
+    "$commentForms": "toolName (an MCP server for logs/metrics/traces), skill (\"observability\"), or command (\"<your-log-cli> read --window {window}\").",
+    "$commentOptions": "Anything that answers a windowed query over logs, metrics or traces: a cloud logging/monitoring bridge, an OTel or Jaeger backend, an APM vendor's server, an ELK/Loki bridge, or a plain CLI wrapper.",
+    "$commentSignals": "List which of the three you actually have. /debug-incident names a missing signal in its verdict rather than working around it in silence — an investigation with no traces is a different investigation, and the report has to say so.",
+    "signals": ["logs", "metrics", "traces"]
+  },
+
   "dod": {
     "$comment": "dod-gate (Stop hook): if uncommitted changes match fileGlobs, all checks must pass before the session may end.",
     "fileGlobs": ["*.ts"],
