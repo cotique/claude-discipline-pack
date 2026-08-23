@@ -2,7 +2,7 @@
   "name": "discipline-pack",
   "displayName": "Discipline Pack",
   "version": "0.3.6",
-  "description": "Guardrails for agentic coding: gated workflow commands (orient / arch-check / implement / tdd-implement / orchestrate / debug-incident / eval-skill / stuck) and enforcement hooks (protected branches, definition-of-done gate, format feedback, secret guard, dependency-vulnerability guard, KB-first nudge, session envelope).",
+  "description": "Guardrails for agentic coding: gated workflow commands (orient / arch-check / implement / tdd-implement / orchestrate / stuck), operational commands (release / bump-dependency / cleanup), diagnostic and measurement commands (debug-incident / eval-skill) and enforcement hooks (protected branches, definition-of-done gate, format feedback, secret guard, dependency-vulnerability guard, KB-first nudge, session envelope).",
   "author": {
     "name": "cotique",
     "url": "https://github.com/cotique"
