@@ -1,0 +1,63 @@
+# Real case. Every mutant here is a defect this pack actually shipped; the patch
+# files are reverts of the commits that fixed them, not invented faults.
+# Every `observed:` line below was measured on Git Bash while authoring this
+# file, not reasoned about.
+skill: test-implementation
+class: mechanical
+task: "write tests for the config reads in _events.sh: mode, events.enabled, events.path"
+fixture: fixtures/events-config-reads/          # holds _events.sh, pinned
+pinned_from: b786834                            # _events.sh as of this commit, byte-identical
+
+mutants:
+  - id: line-wise-cr
+    diff: fixtures/events-config-reads/mutants/line-wise-cr.patch
+    expect: fail
+    confirmed_by: fe7eea1
+    requires: "jq output ends lines with CRLF (the Windows build)"
+    injectable: true
+    injection: >
+      A shim `jq` earlier on PATH that pipes the real jq through
+      "tr -d CR | sed 's/$/CR/'". tests/run.sh already ships exactly this as
+      crlf_shim(), so a surviving mutant here means no test, not an untestable
+      platform.
+    observed: >
+      With that shim, disc_jq_lines '.protectedBranches[]?' returns
+      "main LF master" from the clean fixture and "main CR LF master" from the
+      mutant (od -c). Killable on any platform once the shim is in place.
+
+  - id: single-value-cr
+    diff: fixtures/events-config-reads/mutants/single-value-cr.patch
+    expect: fail
+    confirmed_by: b0d97b7
+    requires: "command substitution keeps a CR that sits before the trailing newline (Linux bash does; Git Bash strips it)"
+    injectable: false
+    injection: >
+      Not fabricable. The difference is in the shell's own command substitution,
+      not in the tool being called, so no shim reproduces it, and on Git Bash
+      this mutant cannot be killed by any test. It reports NOT-REACHABLE there
+      and stays out of the kill-rate denominator — never folded in as a pass.
+    observed: >
+      With the same CRLF shim in front of jq, the single-value read of .mode
+      returns the bytes "shadow" both with and without the mutation. Identical,
+      no CR: unobservable on this platform, exactly as predicted.
+
+  - id: enabled-false-as-absent
+    diff: fixtures/events-config-reads/mutants/enabled-false-as-absent.patch
+    expect: fail
+    confirmed_by: c6bde51
+    requires: none
+    injectable: true
+    injection: >
+      Plain jq on any platform. "false // true" evaluates to true, so
+      "enabled": false reads as enabled and the off switch does nothing. A test
+      only kills this by writing a config that turns events OFF and asserting
+      nothing was logged — asserting that logging works does not.
+    observed: >
+      With events.enabled set to false, the clean fixture writes no event line
+      and the mutant writes one. Killable, and the killing test has to assert on
+      the OFF path.
+
+# Scoring note, from the two mutants above that need a platform: report the kill
+# rate per platform, never as one number. CI runs hooks-bash on ubuntu-latest and
+# hooks-powershell on windows-latest, so no single run of this suite can see both
+# a natural line-wise-cr and single-value-cr.

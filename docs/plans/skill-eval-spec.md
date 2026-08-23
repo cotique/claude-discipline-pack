@@ -116,3 +116,87 @@ Author 2-3 real scenario files by hand for `code-review` and
 past findings/regressions from this pack's own history. If the format can't
 express a real case that already happened, fix the format before writing any
 code against it.
+
+---
+
+## What authoring these scenarios changed (2026-08-23)
+
+Three scenarios were hand-authored against real cases from this pack's history
+before any runner code, as the section above requires: two judged
+(`code-review`) and one mechanical (`test-implementation`), all under
+[scenarios/](../../scenarios/README.md). The format needed three changes, each
+forced by a case that already happened rather than by a hypothetical.
+
+### 1. A judged scenario must carry the intent, not just the diff
+
+`code-review` Stage 1 is explicit that withholding the stated intent makes a
+fresh reviewer produce confident false findings about alternatives that were
+already ruled out. The judged example in this spec had nowhere to put it, so the
+eval would have handed the skill an input the skill's own instructions call
+defective, then scored the resulting false findings against it.
+
+Added: `intent: <path>`, a checked-in file holding the task, the constraints
+given, and what was explicitly out of scope. Both judged scenarios now have one.
+
+### 2. A mutant needs its environmental precondition, and a third outcome
+
+Two of the three mechanical mutants are only observable under a platform
+condition, and they are observable on *opposite* platforms:
+
+- `line-wise-cr` needs jq to emit CRLF, which only the Windows build does.
+- `single-value-cr` needs `$()` to retain a `\r` before the trailing newline,
+  which Linux bash does and Git Bash does not.
+
+So no single run can kill both, and a mutant-kill rate of 100% on one platform
+is not 100%. Left as designed, the score would have been silently
+platform-scoped while reading like a global number.
+
+The pack already answers this two ways, and both belong in the format:
+
+- **Injectable condition → inject it.** `tests/run.sh` ships `crlf_shim()`,
+  a fake `jq` on PATH that fabricates CRLF output, which makes a Windows-only
+  defect reproducible on every runner. Where injection is possible, a surviving
+  mutant is a real coverage gap and must be reported as `survived`.
+- **Non-injectable condition → skip loudly.** `tests/run.sh` also has
+  `NOJQ_SKIP`, which prints a SKIP rather than passing a check it could not
+  perform. `single-value-cr` is this case: the difference lives in the shell's
+  own command substitution, so no shim reproduces it.
+
+Added to each mutant: `requires:` (the condition, in words), `injectable:`
+(true/false), and `injection:` (how, or why not). Added to scoring: a third
+outcome **NOT-REACHABLE**, excluded from the kill-rate denominator and named
+in the report. Folding it in as a pass is the exact false-green this pack's
+canary rule exists to prevent.
+
+### 3. Provenance is a field, not a convention
+
+Every planted issue and every mutant now names what establishes it —
+`confirmed_by`, holding the commit that fixed it or the command that shows it —
+and every fixture names the revision it was pinned from (`pinned_from`).
+
+This was not tidiness. While authoring the second judged scenario, a third
+planted issue was drafted ("the new tests cannot fail on the runner that
+executes them") and turned out to be **false**: the same commit adds the CRLF
+shim, so its tests do go red without the fix. Without a provenance field there
+was nothing that forced the check. The rejected candidate is recorded in the
+scenario file so the next author does not replant it.
+
+### Consequences for the runner, and for §4b
+
+- **Scores are per platform.** CI runs `hooks-bash` on ubuntu-latest and
+  `hooks-powershell` on windows-latest, so a single suite run never sees both
+  platform-scoped mutants. The eval log line carries the platform, and
+  `discipline report` (§4b) groups by it — an aggregate across platforms would
+  average away exactly the defects that hide on one of them.
+- **Report names, never rates alone.** Survived mutants by id, not-reachable
+  mutants by id and reason, misses and false findings by id. Already the rule in
+  this spec; the not-reachable class is new and needs the same treatment.
+
+### Still open before the runner
+
+The judged class scores by matching reported findings against `planted_issues`,
+and that matcher does not exist yet. `judge: reuse-verify-stage` names the
+intended mechanism — `code-review`'s own Stage 3 refutation prompt, run over
+{reported finding} × {planted issue} pairs — but nothing has been run through it
+yet, so the matcher's own accuracy is unmeasured. Per the table above, a judged
+verdict stays `[INFERRED]` until a human has spot-checked its calls.

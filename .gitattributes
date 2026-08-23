@@ -1,3 +1,8 @@
 * text=auto
 *.sh text eol=lf
 *.ps1 text eol=crlf
+
+# Eval fixtures are pinned and applied byte for byte — one of them deliberately
+# carries a raw CR as a planted finding. EOL normalisation would rewrite the
+# thing under test.
+scenarios/fixtures/** -text

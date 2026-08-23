@@ -1,0 +1,55 @@
+# Real case. This diff fixed six config reads and asserted in a comment that the
+# remaining ones were safe. The assertion was wrong on Linux and cost a release.
+skill: code-review
+class: judged
+task: "review this diff before commit"
+fixture: fixtures/config-read-carriage-return/  # holds diff.patch
+intent: fixtures/config-read-carriage-return/intent.md
+pinned_from: fe7eea1
+judge: reuse-verify-stage
+
+planted_issues:
+  - id: single-value-reads-assumed-safe
+    severity: must-fix
+    confirmed_by: b0d97b7
+    description: >
+      The diff adds a comment stating that "single-value reads through $() are
+      already correct, since command substitution drops the trailing newline and
+      its \r with it", and deliberately leaves those reads unstripped. True on
+      Git Bash, false on Linux: $() strips trailing NEWLINES and the carriage
+      return sits in front of them. Measured consequence later: a config read
+      returning the empty string came back as "\r", `[ -n ... ]` saw a value,
+      blockAllPush switched itself on and refused every push. The anchor is
+      inside the diff and needs nothing run — in the same hunk of
+      block-protected-branch.sh, `branches=` is switched to the stripping helper
+      while `block_all_push=$(jq -r ...)` on the next line is not, and
+      blockAllPush is the flag that refuses pushes.
+
+  - id: fix-enumerates-sites-instead-of-stating-a-rule
+    severity: should-fix
+    confirmed_by: b0d97b7
+    description: >
+      The fix is a hand-enumerated list of call sites plus a comment telling
+      future readers to use the helper "only where output is consumed a line at a
+      time". Nothing stops the next jq call from being added without the strip,
+      and the distinction the comment draws is the one that turned out to be
+      wrong. The durable form is a single rule — every jq capture strips \r —
+      which is what the code carries today.
+
+  - id: literal-cr-in-a-comment
+    severity: optional
+    confirmed_by: "od -c on hooks/bash/block-protected-branch.sh at fe7eea1"
+    description: >
+      The new comment in block-protected-branch.sh contains a raw CR byte where
+      the author meant to write the two characters \r, so the comment renders as
+      "strips only the final , so without this" and splits across lines in every
+      later diff of that file. Same class as the stray character fixed in 923aefc.
+      Planted at `optional` on purpose: a review that ranks this alongside the
+      blockAllPush defect has a broken severity scale, and that is worth
+      measuring separately from whether it was spotted at all.
+
+# Candidate considered and rejected, recorded so the next author does not replant
+# it: "the new tests cannot fail on the only runner that executes them" — false.
+# The same commit adds crlf_shim() to tests/run.sh, which fabricates a
+# CRLF-emitting jq, so the new bash assertions do go red without the fix on
+# ubuntu. Checked before planting; the format is only as good as this check.

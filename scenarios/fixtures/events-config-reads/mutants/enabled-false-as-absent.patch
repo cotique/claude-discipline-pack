@@ -1,0 +1,13 @@
+diff --git a/_events.sh b/_events.sh
+index e54935b..1e6c9a3 100644
+--- a/_events.sh
++++ b/_events.sh
+@@ -71,7 +71,7 @@ disc_log() {
+ 
+   local enabled path
+   if disc_have_jq; then
+-    enabled=$(jq -r 'if .events.enabled == false then "no" else "yes" end' "$c" 2>/dev/null | tr -d '\r')
++    enabled=$(jq -r 'if (.events.enabled // true) then "yes" else "no" end' "$c" 2>/dev/null | tr -d '\r')
+     path=$(jq -r '.events.path // ".claude/discipline-events.jsonl"' "$c" 2>/dev/null | tr -d '\r')
+   else
+     # Reduced mode: an unreadable config used to leave path empty, which resolved

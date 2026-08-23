@@ -1,0 +1,71 @@
+diff --git a/hooks/bash/_events.sh b/hooks/bash/_events.sh
+index 486bd15..86c1bbe 100644
+--- a/hooks/bash/_events.sh
++++ b/hooks/bash/_events.sh
+@@ -17,6 +17,20 @@
+ 
+ disc_config_path() { echo "${CLAUDE_PROJECT_DIR:-.}/.claude/discipline.json"; }
+ 
++# Read a jq expression LINE BY LINE. The Windows build of jq emits CRLF, and a
++# trailing \r survives every line-wise read: `mapfile -t` and `while read` both
++# keep it. Measured on Git Bash — `.dod.fileGlobs[]?` came back as `*.cs\r`
++# (od -c: * . c s \r \n), so `case b.cs in *.cs<CR>)` never matched and the whole
++# definition-of-done gate silently became a no-op; and with several protected
++# branches configured, only the LAST one was ever enforced, because $() strips the
++# final \r and nothing strips the others.
++#
++# Not applied blanket-wise: single-value reads through $() are already correct,
++# since command substitution drops the trailing newline and its \r with it. Use
++# this only where output is consumed a line at a time — which is exactly where
++# a platform difference would otherwise disable an asset in silence.
++disc_jq_lines() { jq -r "$1" "$2" 2>/dev/null | tr -d '\r'; }
++
+ disc_mode() {
+   local c; c=$(disc_config_path)
+   local m=""
+diff --git a/hooks/bash/block-protected-branch.sh b/hooks/bash/block-protected-branch.sh
+index 2ac67f4..90f20de 100644
+--- a/hooks/bash/block-protected-branch.sh
++++ b/hooks/bash/block-protected-branch.sh
+@@ -23,7 +23,9 @@ config="$proj/.claude/discipline.json"
+ branches=""
+ block_all_push=""
+ if [ -f "$config" ]; then
+-  branches=$(jq -r '.protectedBranches[]?' "$config" 2>/dev/null)
++  # Multi-line: $() strips only the final , so without this only the last
++  # protected branch was ever enforced on Windows.
++  branches=$(disc_jq_lines '.protectedBranches[]?' "$config")
+   block_all_push=$(jq -r 'if .blockAllPush then "1" else "" end' "$config" 2>/dev/null)
+ fi
+ [ -z "$branches" ] && branches=$'main\nmaster\ndevelop\nrelease/*'
+diff --git a/hooks/bash/dod-gate.sh b/hooks/bash/dod-gate.sh
+index 7881968..153cf11 100644
+--- a/hooks/bash/dod-gate.sh
++++ b/hooks/bash/dod-gate.sh
+@@ -60,7 +60,7 @@ export DISC_SESSION_ID
+ jq -e '.dod.checks | length > 0' "$config" >/dev/null 2>&1 || exit 0
+ 
+ # Any uncommitted (staged or unstaged) file matching a DoD glob?
+-mapfile -t globs < <(jq -r '.dod.fileGlobs[]?' "$config" 2>/dev/null)
++mapfile -t globs < <(disc_jq_lines '.dod.fileGlobs[]?' "$config")
+ [ "${#globs[@]}" -eq 0 ] && globs=("*")
+ 
+ touched=0
+@@ -103,7 +103,7 @@ while IFS=$'\t' read -r pre_name pre_cmd pre_remedy; do
+     } >&2
+     exit 2
+   fi
+-done < <(jq -r '.dod.preconditions[]? | [.name, .command, (.remedy // "")] | @tsv' "$config" 2>/dev/null)
++done < <(disc_jq_lines '.dod.preconditions[]? | [.name, .command, (.remedy // "")] | @tsv' "$config")
+ 
+ failures=""
+ while IFS=$'\t' read -r name check_cmd; do
+@@ -114,7 +114,7 @@ while IFS=$'\t' read -r name check_cmd; do
+ $(tail -n 30 /tmp/dod-gate-out.$$)"
+   fi
+   rm -f /tmp/dod-gate-out.$$
+-done < <(jq -r '.dod.checks[] | [.name, .command] | @tsv' "$config" 2>/dev/null)
++done < <(disc_jq_lines '.dod.checks[] | [.name, .command] | @tsv' "$config")
+ # durationMs is the gate's price: what it costs at every session end. Weigh it
+ # against intercepts when deciding whether the gate keeps its place.
+ duration_ms=$(( $(date +%s) * 1000 - start_ms ))
