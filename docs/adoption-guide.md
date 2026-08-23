@@ -182,7 +182,7 @@ Three legitimate answers, and the choice is per-asset:
 |---|---|---|
 | **Reduced** — keep guarding, on built-in defaults, and label the verdict | The asset's core job does not actually need the dependency | `block-protected-branch`, `secret-guard` |
 | **Block** | The gate's absence is the whole risk and blocking is proportionate | `dod-gate`, once per session at the end |
-| **Pass, but say so** | Nothing useful survives without the dependency | `format-postcheck`, `kb-first-reminder` |
+| **Pass, but say so** | Nothing useful survives without the dependency | `format-postcheck`, `kb-first-reminder`, `dep-vuln-guard` |
 | — | | never: pass in silence |
 
 Reduced mode is the answer to reach for first, because the choice between

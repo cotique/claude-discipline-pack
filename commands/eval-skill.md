@@ -9,7 +9,10 @@ Do NOT edit the skill in this step, and do NOT write scenarios in this step. A
 scenario invented during its own eval measures nothing.
 
 Format and scoring rules: `docs/plans/skill-eval-spec.md`. Scenarios and
-fixtures: `scenarios/README.md`. Evidence tiers: the table in
+fixtures: `scenarios/README.md`. Scenarios are not distributed by the pack:
+they encode one repo's skills and its own past defects, so they live in the repo
+being evaluated. A repo with no `scenarios/` directory gets NOT MEASURED, which
+is the honest answer. Evidence tiers: the table in
 `commands/arch-check.md` — same tiers, same hard rules, including that a
 negative finding must show its searches.
 
