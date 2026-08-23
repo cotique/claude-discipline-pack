@@ -76,5 +76,22 @@
     "$comment": "format-postcheck (PostToolUse): glob -> check command, {file} is replaced with the edited file path.",
     "*.ts": "npx prettier --check \"{file}\"",
     "*.cs": "dotnet format --verify-no-changes --include \"{file}\""
+  },
+
+  "depVuln": {
+    "$comment": "dep-vuln-guard (PostToolUse): when a dependency manifest changes, run that ecosystem's own audit tool. No defaults on purpose — every one of these commands does network I/O, and a hook that fires an unrequested registry call on the first manifest edit of a session is a cost nobody agreed to. Missing section = no-op.",
+    "manifests": {
+      "package.json": "npm audit --audit-level=high",
+      "requirements.txt": "pip-audit -r requirements.txt",
+      "$commentCsproj": "Some tools report findings on stdout and still exit 0 — `dotnet list package --vulnerable` is the one that started this. Where findingsPattern is set it decides and the exit code is ignored, because trusting that exit code is a green signal that cannot go red.",
+      "*.csproj": {
+        "command": "dotnet list package --vulnerable --include-transitive",
+        "findingsPattern": "has the following vulnerable packages"
+      }
+    },
+    "$commentUnavailable": "An unreachable registry is not a verdict on your dependencies. Output matching this pattern is reported as UNVERIFIED and allowed through — advisory, not blocking, because a false block on every offline edit is how a gate gets switched off. The default covers the common network errors; override it to add your proxy's wording.",
+    "unavailablePattern": "ENOTFOUND|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|network|offline|Unable to load the service index",
+    "$commentTimeout": "A slow registry must not hang the session. The bash hook needs `timeout` on PATH; without it it runs unbounded and says so in the event rather than pretending a bound was applied. The PowerShell twin uses a job and needs nothing extra.",
+    "timeoutSeconds": 120
   }
 }
