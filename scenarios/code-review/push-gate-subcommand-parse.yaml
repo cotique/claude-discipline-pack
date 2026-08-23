@@ -1,0 +1,47 @@
+# Real case, not a constructed one. This diff shipped, passed review, and both
+# planted issues below were later found by hand against a live session.
+skill: code-review
+class: judged
+task: "review this diff before commit"
+fixture: fixtures/push-gate-subcommand-parse/   # holds diff.patch
+intent: fixtures/push-gate-subcommand-parse/intent.md
+pinned_from: b6fd3fc                            # the commit this diff was taken from
+judge: reuse-verify-stage                       # code-review's own Stage 3 prompt
+
+planted_issues:
+  - id: chained-bypass
+    severity: must-fix
+    confirmed_by: 2d64fe0                       # "Both observed live"
+    description: >
+      git_subcommand() returns the FIRST subcommand on the line and the caller
+      then judges the whole command by it, so
+      `git remote set-url origin X && git push origin master` is judged as
+      `remote` and every push check is skipped. The same diff removes the
+      `[^|;&]` character class from the greps it replaces, which was the only
+      thing in the old version that acknowledged chaining at all — so this is a
+      regression the diff introduces, visible without leaving the diff.
+
+  - id: push-target-from-line-position
+    severity: must-fix
+    confirmed_by: 2d64fe0
+    description: >
+      Push targets are read with `tr ' ' '\n' | grep -v ... | tail -n +2`, i.e.
+      by position from the start of the line rather than anchored on the `push`
+      token. A token belonging to an unrelated later segment is read as a push
+      target, so a legitimate feature-branch push followed by another command is
+      blocked. A false intercept in a blocking gate costs the session.
+
+  - id: decides-from-untrusted-text
+    severity: must-fix
+    confirmed_by: 2d64fe0                       # led to the structural fix
+    description: >
+      The gate decides from the text of a command that has not run yet. The diff
+      hardens quoting (strip "..." and '...') and leaves `$(...)`, `bash -c`,
+      xargs and multi-line scripts unhandled. This is the class-level finding —
+      the one the two issues above are instances of — and the eventual fix was
+      structural: enforcement moved to a pre-push git hook, which git calls with
+      the real refs on stdin. A review that reports only the two instances and
+      not the class scores two hits and still misses what mattered.
+
+# Why this scenario is worth keeping even after the code was redesigned: the
+# review that let it through is the artifact under test, not the hook.

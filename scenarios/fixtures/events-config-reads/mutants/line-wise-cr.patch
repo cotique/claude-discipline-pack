@@ -1,0 +1,13 @@
+diff --git a/_events.sh b/_events.sh
+index e54935b..a9edc39 100644
+--- a/_events.sh
++++ b/_events.sh
+@@ -33,7 +33,7 @@ disc_config_path() { echo "${CLAUDE_PROJECT_DIR:-.}/.claude/discipline.json"; }
+ # blockAllPush switched itself on, refusing every push. Depending on the Git Bash
+ # behaviour was depending on a platform quirk rather than a guarantee, so every jq
+ # capture in these hooks strips \r explicitly.
+-disc_jq_lines() { jq -r "$1" "$2" 2>/dev/null | tr -d '\r'; }
++disc_jq_lines() { jq -r "$1" "$2" 2>/dev/null; }
+ 
+ disc_have_jq() { command -v jq >/dev/null 2>&1; }
+ 

@@ -82,6 +82,9 @@ A gated workflow — each command is a phase with hard boundaries:
 | `/implement <feature>` | Build | Only pre-approved abstractions, smallest possible diff, must show proof it works |
 | `/orchestrate <feature>` | Design-for-delegation | Produces a self-contained worker prompt instead of implementing |
 | `/stuck` | Circuit breaker | No fixes. Diagnose, present options with tradeoffs, wait for a human |
+| `/tdd-implement <feature>` | Build, test-first | Stricter sibling of `/implement`. The test comes first and must fail **for the stated reason** — an import error is not a red |
+| `/debug-incident <incident>` | Production diagnosis | No fix, no restart. Logs → metrics → traces → hypothesis → verification. Returns ROOT CAUSE FOUND or INCONCLUSIVE |
+| `/eval-skill <skill>` | Measurement | Runs a skill against fixed scenarios and reports the delta against a control. Returns MEASURED or NOT MEASURED — never an unbacked pass rate |
 
 Operational commands, outside the build workflow. Each is a sequence performed a
 handful of times, always the same way, and each loses a step the moment it is
@@ -103,6 +106,7 @@ ran succeeded:
 | `dod-gate` | Stop | If uncommitted changes match configured globs, build/test checks must pass before the session may end |
 | `format-postcheck` | PostToolUse (Edit/Write) | Runs your formatter check on the edited file, feeds violations back to Claude |
 | `secret-guard` | PreToolUse (Bash/Edit/Write) + UserPromptSubmit | **Blocks** credential material heading into a file or a command; **warns only** when a human pastes one into the chat, because by then the transcript already has it and the useful action is rotating it |
+| `dep-vuln-guard` | PostToolUse (Edit/Write) | When a dependency manifest changes, runs that ecosystem's own audit tool (`npm audit`, `dotnet list package --vulnerable`, `pip-audit`). **Blocks** on findings; an unreachable registry or a timed-out audit is reported as UNVERIFIED and allowed through, because that is not a verdict on your dependencies. No config section = no-op |
 | `kb-first-reminder` | UserPromptSubmit | Nudges Claude to query your knowledge-base MCP before spelunking code |
 | `session-envelope` | SessionStart + PreCompact | Persists the operating state before a compaction and re-grounds it after, with a count of compactions so far. Re-grounds the operating state — branch, HEAD, worktrees, dirty count per repo, plus your standing constraints. Compaction keeps conclusions and drops exactly this |
 
@@ -132,6 +136,13 @@ and isn't is worse than one with no gates at all.
 {"ts":"…","asset":"dod-gate","event":"block","verdict":"fail","mode":"enforce","sessionId":"…","durationMs":41200}
 ```
 
+`discipline report` turns that log into the summary (per asset: firings, verdicts,
+mode split, cost percentiles, and the shadow-graduation view). One thing it
+refuses to do is imply the log knows more than it does: a would-block line says a
+gate *would* have fired, not that firing would have been right — a gate with a
+100% false-positive rate writes exactly the same lines as one that never errs. The
+report names the sessions to read before you switch a gate to `enforce`.
+
 With it, the questions that decide whether an asset stays become queries rather
 than research: how often did it fire, what did it catch, how often did a human
 override it, and what did it cost. `durationMs` on the DoD gate is the price you
@@ -149,6 +160,25 @@ project-specific `plan-feature` / `implement-plan` / `test-implementation` /
 lessons by name — and replaces `/arch-check` + `/implement` in that repo. See
 [skill-templates/README.md](skill-templates/README.md) and the "Graduating"
 section of the adoption guide.
+
+### Skill evals (`scenarios/`)
+
+A skill can ship, be used for months, and never be measured — hooks get shadow
+mode, skills got nothing. `scenarios/` holds fixed test cases for a skill, run by
+`/eval-skill`, and every scenario in this repo encodes a defect the pack actually
+shipped rather than an invented one. Two classes, because they are not scored the
+same way:
+
+- **mechanical** — the skill writes tests, then real past defects are re-applied
+  as mutant patches. A surviving mutant names a behaviour with no real test.
+- **judged** — the skill reports findings against a diff with planted issues,
+  matched by the skill's own verify prompt. Reports misses, false findings, and
+  severity errors.
+
+Mutants that cannot be reached on the current platform are reported as
+NOT-REACHABLE and kept out of the pass rate, never folded in as passes. See
+[scenarios/README.md](scenarios/README.md) and
+[docs/plans/skill-eval-spec.md](docs/plans/skill-eval-spec.md).
 
 ## Install
 
@@ -186,7 +216,7 @@ Note for `dod-gate` and `format-postcheck` check commands: use commands that
 report problems on stdout/stderr and exit non-zero (any real build tool does)
 — the hook relays their output to Claude verbatim.
 
-## Team distribution: init / apply / check
+## Team distribution: init / apply / check / report
 
 The plugin installs per **user**. To roll the pack out per **repo** — so the
 whole team gets it through git, pinned and drift-checked — use the bundled
@@ -196,6 +226,7 @@ CLI (Node 18+, no dependencies):
 node bin/discipline.mjs init  --target ../my-repo --components hooks
 node bin/discipline.mjs apply --target ../my-repo
 node bin/discipline.mjs check --target ../my-repo
+node bin/discipline.mjs report --target ../my-repo --since 14d
 ```
 
 - `init` writes `.claude/discipline-manifest.json` (pack version pin, chosen
@@ -208,6 +239,11 @@ node bin/discipline.mjs check --target ../my-repo
   fix belongs upstream in the pack) and on **reserved-name collisions** (a project
   command or skill named like a pack command — overlays are additive, never
   overriding). Run it in CI.
+- `report` reads the event log and answers the questions it was collected
+  for: what each asset fired on, how it ruled, what it cost (p50/p95), which
+  shadow gate has enough would-blocks to be worth graduating, and which
+  applied hook has been silent. It also says what the log **cannot** tell you
+  — see "Shadow mode and the event log" above.
 
 Pick components per repo maturity: a young repo takes `commands,hooks`; a
 repo that has graduated to its own skill set (see below) takes `hooks` only.
@@ -259,6 +295,10 @@ both are covered in [docs/adoption-guide.md](docs/adoption-guide.md).
 Guardrails that nobody measures decay into folklore. These signals are cheap to
 collect from your own session transcripts and git history, and they move for
 real reasons:
+
+Everything in the table above is reconstructed after the fact, with the traps
+described below. The gates' own firings are the exception — those are recorded as
+they happen, and `discipline report --since 14d` is the whole of that analysis.
 
 | Signal | Where it comes from | Direction |
 |---|---|---|

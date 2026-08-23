@@ -5,6 +5,7 @@
  *   node bin/discipline.mjs init  --target <repo> [--components commands,hooks]
  *   node bin/discipline.mjs apply --target <repo> [--force]
  *   node bin/discipline.mjs check --target <repo>
+ *   node bin/discipline.mjs report --target <repo> [--since 7d] [--min-firings 10]
  *
  * Model: this repo is the versioned pack (version = .claude-plugin/plugin.json).
  * `apply` vendors pack files into <repo>/.claude and records their sha256 in
@@ -42,6 +43,8 @@ function args(argv) {
     if (argv[i] === '--target') out.target = argv[++i];
     else if (argv[i] === '--components') out.components = argv[++i].split(',').map((s) => s.trim());
     else if (argv[i] === '--force') out.force = true;
+    else if (argv[i] === '--since') out.since = argv[++i];
+    else if (argv[i] === '--min-firings') out.minFirings = argv[++i];
     else out._.push(argv[i]);
   }
   return out;
@@ -361,13 +364,176 @@ function check(opts) {
   console.log('check: healthy');
 }
 
+
+// ---------- report ----------
+/**
+ * Read the event log as records, and count what could not be parsed. A
+ * truncated or corrupt log must not read as a quiet one: `check` skips malformed
+ * lines silently, which is right for a gate and wrong for a report — a report
+ * that drops part of its input and prints a confident total is the same
+ * false-green the pack's canary rule exists to catch.
+ */
+function readEvents(logPath, sinceMs) {
+  const out = { events: [], malformed: 0, total: 0 };
+  if (!fs.existsSync(logPath)) return out;
+  for (const line of fs.readFileSync(logPath, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    out.total++;
+    let e;
+    try { e = JSON.parse(line); } catch { out.malformed++; continue; }
+    if (!e || typeof e.asset !== 'string') { out.malformed++; continue; }
+    if (sinceMs !== null && (!e.ts || Date.parse(e.ts) < sinceMs)) continue;
+    out.events.push(e);
+  }
+  return out;
+}
+
+/** "7d" / "12h" / an ISO date -> epoch ms, or null for all-time. */
+function parseSince(s) {
+  if (!s) return null;
+  const m = /^(\d+)([dh])$/.exec(s.trim());
+  if (m) return Date.now() - Number(m[1]) * (m[2] === 'd' ? 86400000 : 3600000);
+  const t = Date.parse(s);
+  if (Number.isNaN(t)) die(`--since wants Nd, Nh, or an ISO date; got: ${s}`);
+  return t;
+}
+
+function pctl(arr, p) {
+  if (!arr.length) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
+}
+const tally = (map, key) => map.set(key, (map.get(key) ?? 0) + 1);
+const fmtTally = (map) =>
+  [...map.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}=${n}`).join(' ');
+
+function report(opts) {
+  const target = path.resolve(opts.target ?? die('report needs --target <repo>'));
+  const manifest = loadManifest(target);
+  let cfg = null;
+  const cfgPath = path.join(target, '.claude', 'discipline.json');
+  if (fs.existsSync(cfgPath)) { try { cfg = readJson(cfgPath); } catch { /* reported by check */ } }
+
+  const rel = cfg?.events?.path ?? '.claude/discipline-events.jsonl';
+  const logPath = path.isAbsolute(rel) ? rel : path.join(target, rel);
+  const sinceMs = parseSince(opts.since);
+  const window = opts.since ? `since ${opts.since}` : 'all recorded time';
+
+  if (!fs.existsSync(logPath)) {
+    console.log(`report: no event log at ${rel}`);
+    if (cfg?.events?.enabled === false) {
+      console.log('  events are disabled in .claude/discipline.json — nothing is being recorded, so ' +
+                  'nothing can be measured. That is a choice, not a clean bill of health.');
+    } else {
+      console.log('  events default to on, so an absent log means either no hook has fired yet or ' +
+                  'none is registered in .claude/settings.json. Those are different problems — check ' +
+                  'the registration before concluding the gates are quiet.');
+    }
+    return;
+  }
+
+  const { events, malformed, total } = readEvents(logPath, sinceMs);
+  console.log(`report: ${logPath}`);
+  console.log(`window: ${window} — ${events.length} event(s) of ${total} line(s)`);
+  if (malformed) {
+    console.log(`  WARNING: ${malformed} line(s) could not be parsed and are in none of the numbers ` +
+                'below. A truncated log reads exactly like a quiet one; find out which this is.');
+  }
+  if (!events.length) { console.log('  nothing in this window'); return; }
+
+  // Per asset: what fired, how it ruled, in which mode, and what it cost.
+  const assets = new Map();
+  for (const e of events) {
+    let a = assets.get(e.asset);
+    if (!a) {
+      a = { n: 0, events: new Map(), verdicts: new Map(), modes: new Map(), durations: [],
+            sessions: new Set(), shadowSessions: new Set(), first: null, last: null };
+      assets.set(e.asset, a);
+    }
+    a.n++;
+    tally(a.events, e.event ?? '?');
+    tally(a.verdicts, e.verdict ?? '?');
+    tally(a.modes, e.mode ?? '?');
+    if (typeof e.durationMs === 'number') a.durations.push(e.durationMs);
+    if (e.sessionId) a.sessions.add(e.sessionId);
+    if (e.mode === 'shadow' && e.event === 'would-block' && e.sessionId) a.shadowSessions.add(e.sessionId);
+    if (e.ts && (!a.first || e.ts < a.first)) a.first = e.ts;
+    if (e.ts && (!a.last || e.ts > a.last)) a.last = e.ts;
+  }
+
+  console.log('');
+  for (const [name, a] of [...assets.entries()].sort((x, y) => y[1].n - x[1].n)) {
+    console.log(`${name}  ${a.n} firing(s)${a.sessions.size ? ` across ${a.sessions.size} session(s)` : ''}`);
+    console.log(`  events   ${fmtTally(a.events)}`);
+    console.log(`  verdicts ${fmtTally(a.verdicts)}`);
+    console.log(`  mode     ${fmtTally(a.modes)}`);
+    if (a.durations.length) {
+      // The cost side of the ledger: a gate is worth what it catches minus what
+      // it charges every time it runs.
+      console.log(`  cost     p50 ${pctl(a.durations, 50)}ms · p95 ${pctl(a.durations, 95)}ms ` +
+                  `(${a.durations.length} timed)`);
+    }
+    console.log(`  seen     ${a.first?.slice(0, 19) ?? '?'} -> ${a.last?.slice(0, 19) ?? '?'}`);
+  }
+
+  // Graduation: the question shadow mode exists to answer, and the one thing
+  // this log cannot answer by itself.
+  const minFirings = Number(opts.minFirings ?? 10);
+  const shadowed = [...assets.entries()].filter(([, a]) => (a.events.get('would-block') ?? 0) > 0);
+  console.log('');
+  if (!shadowed.length) {
+    console.log('graduation: no would-block events in this window — nothing is waiting in shadow mode.');
+  } else {
+    console.log('graduation: what shadow mode measured, and what it cannot');
+    for (const [name, a] of shadowed) {
+      const wb = a.events.get('would-block') ?? 0;
+      const days = a.first && a.last
+        ? Math.max(1, Math.round((Date.parse(a.last) - Date.parse(a.first)) / 86400000))
+        : null;
+      const verdict = wb < minFirings
+        ? `too few to estimate anything (< ${minFirings})`
+        : 'enough firings to sample';
+      console.log(`  ${name}: ${wb} would-block(s)${days ? ` over ~${days} day(s)` : ''} — ${verdict}`);
+      if (wb >= minFirings && a.shadowSessions.size) {
+        console.log(`    sample these sessions: ${[...a.shadowSessions].slice(0, 5).join(', ')}` +
+                    (a.shadowSessions.size > 5 ? ` (+${a.shadowSessions.size - 5} more)` : ''));
+      }
+    }
+    console.log('  This log records that a gate WOULD have fired. It does not record whether firing');
+    console.log('  would have been right — a gate with a 100% false-positive rate writes exactly the');
+    console.log('  same lines as one that never errs. Read the sampled sessions before switching mode');
+    console.log('  to "enforce", or you are graduating an unmeasured gate.');
+  }
+
+  // Applied but silent. Not automatically a fault — secret-guard is supposed to
+  // be quiet — but an inert hook and a hook with nothing to catch look identical
+  // from here, and only one of those is fine.
+  if (manifest) {
+    const applied = new Set(
+      Object.keys(manifest.files)
+        .filter((f) => f.replace(/\\/g, '/').startsWith('.claude/hooks/'))
+        .map((f) => path.basename(f).replace(/\.(sh|ps1)$/, ''))
+        .filter((n) => !n.startsWith('_')),
+    );
+    const silent = [...applied].filter((n) => !assets.has(n)).sort();
+    if (silent.length) {
+      console.log('');
+      console.log(`silent in this window: ${silent.join(', ')}`);
+      console.log('  Either they had nothing to catch, or they are not registered in ' +
+                  '.claude/settings.json, or they are inert (missing jq). Those need different ' +
+                  'fixes and the log cannot tell them apart.');
+    }
+  }
+}
 // ---------- main ----------
 const opts = args(process.argv.slice(2));
 const cmd = opts._[0];
 if (cmd === 'init') init(opts);
 else if (cmd === 'apply') apply(opts);
 else if (cmd === 'check') check(opts);
+else if (cmd === 'report') report(opts);
 else {
-  console.log('usage: discipline.mjs <init|apply|check> --target <repo> [--components commands,hooks] [--force]');
+  console.log('usage: discipline.mjs <init|apply|check|report> --target <repo> [--components commands,hooks] [--force]');
+  console.log('       discipline.mjs report --target <repo> [--since 7d|12h|ISO] [--min-firings 10]');
   process.exit(cmd ? 1 : 0);
 }

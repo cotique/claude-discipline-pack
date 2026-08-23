@@ -1,0 +1,24 @@
+diff --git a/_events.sh b/_events.sh
+index e54935b..6a81aa0 100644
+--- a/_events.sh
++++ b/_events.sh
+@@ -54,7 +54,7 @@ disc_field_crude() { # field name; payload on stdin
+ disc_mode() {
+   local c; c=$(disc_config_path)
+   local m=""
+-  [ -f "$c" ] && m=$(jq -r '.mode // empty' "$c" 2>/dev/null | tr -d '\r')
++  [ -f "$c" ] && m=$(jq -r '.mode // empty' "$c" 2>/dev/null)
+   case "$m" in shadow) echo shadow ;; *) echo enforce ;; esac
+ }
+ 
+@@ -71,8 +71,8 @@ disc_log() {
+ 
+   local enabled path
+   if disc_have_jq; then
+-    enabled=$(jq -r 'if .events.enabled == false then "no" else "yes" end' "$c" 2>/dev/null | tr -d '\r')
+-    path=$(jq -r '.events.path // ".claude/discipline-events.jsonl"' "$c" 2>/dev/null | tr -d '\r')
++    enabled=$(jq -r 'if .events.enabled == false then "no" else "yes" end' "$c" 2>/dev/null)
++    path=$(jq -r '.events.path // ".claude/discipline-events.jsonl"' "$c" 2>/dev/null)
+   else
+     # Reduced mode: an unreadable config used to leave path empty, which resolved
+     # to the project directory itself and made every append fail with

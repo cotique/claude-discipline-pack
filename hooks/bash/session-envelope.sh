@@ -137,7 +137,7 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "  DEPENDENCY MISSING: jq is not installed. Current state of the bash hooks:"
   echo "    REDUCED  block-protected-branch - built-in branch list only, no config"
   echo "    REDUCED  secret-guard - built-in detectors only, no custom patterns"
-  echo "    INERT    format-postcheck, kb-first-reminder"
+  echo "    INERT    format-postcheck, kb-first-reminder, dep-vuln-guard"
   echo "    dod-gate still reports; the envelope above is NOT persisted across compaction"
   echo "  Install jq, or use the PowerShell twins, which need no external parser."
   disc_log session-envelope degraded fired "jq missing: enforcement hooks inert"

@@ -49,6 +49,15 @@
     }
   },
 
+  "observability": {
+    "$comment": "Log/metric/trace source used by /debug-incident. Declared the same way as codeGraph, and for the same reason: name the capability, not the vendor. Any one form satisfies it — toolName (an MCP server), skill, or command. Nothing enforces its presence; a missing section means /debug-incident says which source it used by hand instead.",
+    "toolName": "<your-observability-mcp-server>",
+    "$commentForms": "toolName (an MCP server for logs/metrics/traces), skill (\"observability\"), or command (\"<your-log-cli> read --window {window}\").",
+    "$commentOptions": "Anything that answers a windowed query over logs, metrics or traces: a cloud logging/monitoring bridge, an OTel or Jaeger backend, an APM vendor's server, an ELK/Loki bridge, or a plain CLI wrapper.",
+    "$commentSignals": "List which of the three you actually have. /debug-incident names a missing signal in its verdict rather than working around it in silence — an investigation with no traces is a different investigation, and the report has to say so.",
+    "signals": ["logs", "metrics", "traces"]
+  },
+
   "dod": {
     "$comment": "dod-gate (Stop hook): if uncommitted changes match fileGlobs, all checks must pass before the session may end.",
     "fileGlobs": ["*.ts"],
@@ -67,6 +76,23 @@
     "$comment": "format-postcheck (PostToolUse): glob -> check command, {file} is replaced with the edited file path.",
     "*.ts": "npx prettier --check \"{file}\"",
     "*.cs": "dotnet format --verify-no-changes --include \"{file}\""
+  },
+
+  "depVuln": {
+    "$comment": "dep-vuln-guard (PostToolUse): when a dependency manifest changes, run that ecosystem's own audit tool. No defaults on purpose — every one of these commands does network I/O, and a hook that fires an unrequested registry call on the first manifest edit of a session is a cost nobody agreed to. Missing section = no-op.",
+    "manifests": {
+      "package.json": "npm audit --audit-level=high",
+      "requirements.txt": "pip-audit -r requirements.txt",
+      "$commentCsproj": "Some tools report findings on stdout and still exit 0 — `dotnet list package --vulnerable` is the one that started this. Where findingsPattern is set it decides and the exit code is ignored, because trusting that exit code is a green signal that cannot go red.",
+      "*.csproj": {
+        "command": "dotnet list package --vulnerable --include-transitive",
+        "findingsPattern": "has the following vulnerable packages"
+      }
+    },
+    "$commentUnavailable": "An unreachable registry is not a verdict on your dependencies. Output matching this pattern is reported as UNVERIFIED and allowed through — advisory, not blocking, because a false block on every offline edit is how a gate gets switched off. The default covers the common network errors; override it to add your proxy's wording.",
+    "unavailablePattern": "ENOTFOUND|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|network|offline|Unable to load the service index",
+    "$commentTimeout": "A slow registry must not hang the session. The bash hook needs `timeout` on PATH; without it it runs unbounded and says so in the event rather than pretending a bound was applied. The PowerShell twin uses a job and needs nothing extra.",
+    "timeoutSeconds": 120
   },
 
   "release": {

@@ -268,6 +268,34 @@ set_config "$fmt" '{"format":{"*.ts":"true"}}'
 run_hook format-postcheck.sh '{"tool_input":{"file_path":"/x/app.module.ts"}}' "$fmt"; assert 'format: clean file passes' 0
 run_hook format-postcheck.sh '{"tool_input":{"file_path":"/x/README.md"}}' "$fmt";     assert 'format: non-matching ignored' 0
 
+# ---- dep-vuln-guard ----
+# Every case here maps to a real property of the three tools this hook is meant
+# to wrap. The fourth is the important one: `dotnet list package --vulnerable`
+# exits 0 while printing findings, so a hook that trusts exit codes alone is a
+# green signal that cannot go red.
+dvg=$(new_repo feature/test)
+dvg_run() { run_hook dep-vuln-guard.sh "{\"tool_input\":{\"file_path\":\"$1\"}}" "$dvg"; }
+
+set_config "$dvg" '{"depVuln":{"manifests":{"package.json":"echo found 0 vulnerabilities"}}}'
+dvg_run package.json;  assert 'depvuln: clean audit passes' 0
+set_config "$dvg" '{"depVuln":{"manifests":{"package.json":"echo 3 high severity vulnerabilities; exit 1"}}}'
+dvg_run package.json;  assert 'depvuln: findings block' 2 'reported vulnerabilities'
+dvg_run src/index.ts;  assert 'depvuln: non-manifest ignored' 0
+set_config "$dvg" '{"depVuln":{"manifests":{"*.csproj":{"command":"echo Project X has the following vulnerable packages","findingsPattern":"has the following vulnerable packages"}}}}'
+dvg_run app.csproj;    assert 'depvuln: findingsPattern beats a lying exit 0' 2 'reported vulnerabilities'
+set_config "$dvg" '{"depVuln":{"manifests":{"*.csproj":"echo Project X has the following vulnerable packages"}}}'
+dvg_run app.csproj;    assert 'depvuln: without the pattern the same exit 0 passes' 0
+set_config "$dvg" '{"depVuln":{"manifests":{"package.json":"echo npm ERR! code ENOTFOUND >&2; exit 1"}}}'
+dvg_run package.json;  assert 'depvuln: unreachable registry is not a verdict' 0 'did not run'
+set_config "$dvg" '{"depVuln":{"timeoutSeconds":1,"manifests":{"package.json":"sleep 5"}}}'
+dvg_run package.json;  assert 'depvuln: a hanging audit is killed, not believed' 0 'did not finish'
+set_config "$dvg" '{"mode":"shadow","depVuln":{"manifests":{"package.json":"echo vulns; exit 1"}}}'
+dvg_run package.json;  assert 'depvuln: shadow reports and allows' 0 'SHADOW'
+set_config "$dvg" '{"protectedBranches":["main"]}'
+dvg_run package.json
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then echo 'PASS  depvuln: no config section, no-op and silent'
+else echo "FAIL  depvuln: no config section, no-op and silent (exit $RC, output: $OUT)"; failed=$((failed + 1)); fi
+
 # ---- code-graph gate: any declaration form satisfies it ----
 cg=$(new_repo feature/graph)
 for i in $(seq 1 600); do echo "const x$i = $i;" >> "$cg/big.ts"; done
@@ -282,6 +310,53 @@ for form in '{"codeGraph":{"recommendAtLoc":100,"requireAtLoc":200}}'           
   if [ "$rc" -eq "$want" ]; then echo "PASS  codeGraph: $label"
   else echo "FAIL  codeGraph: $label (exit $rc, expected $want): $out"; failed=$((failed+1)); fi
 done
+
+# ---- report: the event log turned into the questions it was collected for ----
+# The two numbers that decide a gate's fate — would-blocks and cost — plus the
+# two ways this report can lie: counting a truncated log as a quiet one, and
+# presenting would-blocks as if they were correct blocks.
+rp=$(new_repo feature/report)
+node "$root/bin/discipline.mjs" init --target "$rp" --components hooks >/dev/null
+node "$root/bin/discipline.mjs" apply --target "$rp" >/dev/null   # the silent-hook list reads the applied manifest
+set_config "$rp" '{"mode":"shadow","events":{"enabled":true,"path":".claude/discipline-events.jsonl"}}'
+
+out=$(node "$root/bin/discipline.mjs" report --target "$rp" 2>&1)
+if printf '%s' "$out" | grep -q 'no event log'; then echo 'PASS  report: absent log is named, not implied'
+else echo "FAIL  report: absent log is named, not implied ($out)"; failed=$((failed+1)); fi
+
+rlog="$rp/.claude/discipline-events.jsonl"
+{
+  for i in 1 2 3; do
+    echo "{\"ts\":\"2026-08-20T10:0${i}:00Z\",\"asset\":\"dod-gate\",\"event\":\"block\",\"verdict\":\"fail\",\"mode\":\"enforce\",\"sessionId\":\"s-a\",\"durationMs\":4${i}000}"
+  done
+  for i in $(seq 1 12); do
+    echo "{\"ts\":\"2026-08-21T09:$(printf %02d "$i"):00Z\",\"asset\":\"secret-guard\",\"event\":\"would-block\",\"verdict\":\"fail\",\"mode\":\"shadow\",\"sessionId\":\"s-$((i % 4))\"}"
+  done
+  echo '{"ts":"2026-08-22T12:01:00Z","asset":"dep-vuln-guard","event":"would-block","verdict":"fail","mode":"shadow","sessionId":"s-x"}'
+  # A session killed mid-write leaves exactly this.
+  printf '{"ts":"2026-08-23T08:01:00Z","asset":"dod-ga\n'
+} > "$rlog"
+
+out=$(node "$root/bin/discipline.mjs" report --target "$rp" 2>&1); rc=$?
+check_report() { # label pattern
+  if printf '%s' "$out" | grep -q "$2"; then echo "PASS  report: $1"
+  else echo "FAIL  report: $1 (not in output: $out)"; failed=$((failed+1)); fi
+}
+[ "$rc" -eq 0 ] && echo 'PASS  report: exits 0 on a readable log' || { echo "FAIL  report: exits 0 on a readable log (exit $rc)"; failed=$((failed+1)); }
+check_report 'counts the events it could parse'        '16 event(s) of 17 line(s)'
+check_report 'a truncated line is reported, not eaten' 'could not be parsed'
+check_report 'cost percentiles for a timed gate'       'p50 42000ms'
+check_report 'enough would-blocks to sample'           'secret-guard: 12 would-block'
+check_report 'too few to conclude anything'            'too few to estimate'
+check_report 'names sessions to read before enforcing' 'sample these sessions'
+check_report 'says what the log cannot tell you'       'does not record whether firing'
+check_report 'applied but silent hooks are listed'     'silent in this window'
+
+out=$(node "$root/bin/discipline.mjs" report --target "$rp" --since 2026-08-22 2>&1)
+check_report 'window filters older events'             '1 event(s) of 17 line(s)'
+out=$(node "$root/bin/discipline.mjs" report --target "$rp" --since nonsense 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'wants Nd'; then echo 'PASS  report: an unparseable window is refused, not ignored'
+else echo "FAIL  report: an unparseable window is refused, not ignored (exit $rc): $out"; failed=$((failed+1)); fi
 
 # ---- CRLF must not read as drift ----
 crlf=$(new_repo feature/crlf)

@@ -107,6 +107,33 @@ Set-Config $fmt '{"format":{"*.ts":"cmd /c exit 0"}}'
 Assert 'format: clean file passes'      (Invoke-Hook 'format-postcheck.ps1' '{"tool_input":{"file_path":"C:/x/app.module.ts"}}' $fmt) 0
 Assert 'format: non-matching ignored'   (Invoke-Hook 'format-postcheck.ps1' '{"tool_input":{"file_path":"C:/x/README.md"}}' $fmt) 0
 
+# ---- dep-vuln-guard ----
+# Mirror of the bash cases. The fourth is the one that matters: `dotnet list
+# package --vulnerable` exits 0 while printing findings, so a hook that trusts
+# the exit code alone is a green signal that cannot go red.
+$dvg = New-TestRepo 'feature/test'
+function DVG([string]$file) { Invoke-Hook 'dep-vuln-guard.ps1' ('{"tool_input":{"file_path":"' + $file + '"}}') $dvg }
+
+Set-Config $dvg '{"depVuln":{"manifests":{"package.json":"cmd /c \"echo found 0 vulnerabilities\""}}}'
+Assert 'depvuln: clean audit passes' (DVG 'package.json') 0
+Set-Config $dvg '{"depVuln":{"manifests":{"package.json":"cmd /c \"echo 3 high severity vulnerabilities & exit 1\""}}}'
+Assert 'depvuln: findings block' (DVG 'package.json') 2 'reported vulnerabilities'
+Assert 'depvuln: non-manifest ignored' (DVG 'src/index.ts') 0
+Set-Config $dvg '{"depVuln":{"manifests":{"*.csproj":{"command":"cmd /c \"echo Project X has the following vulnerable packages\"","findingsPattern":"has the following vulnerable packages"}}}}'
+Assert 'depvuln: findingsPattern beats a lying exit 0' (DVG 'app.csproj') 2 'reported vulnerabilities'
+Set-Config $dvg '{"depVuln":{"manifests":{"*.csproj":"cmd /c \"echo Project X has the following vulnerable packages\""}}}'
+Assert 'depvuln: without the pattern the same exit 0 passes' (DVG 'app.csproj') 0
+Set-Config $dvg '{"depVuln":{"manifests":{"package.json":"cmd /c \"echo npm ERR! code ENOTFOUND & exit 1\""}}}'
+Assert 'depvuln: unreachable registry is not a verdict' (DVG 'package.json') 0 'did not run'
+Set-Config $dvg '{"depVuln":{"timeoutSeconds":1,"manifests":{"package.json":"Start-Sleep -Seconds 15"}}}'
+Assert 'depvuln: a hanging audit is killed, not believed' (DVG 'package.json') 0 'did not finish'
+Set-Config $dvg '{"mode":"shadow","depVuln":{"manifests":{"package.json":"cmd /c \"echo vulns & exit 1\""}}}'
+Assert 'depvuln: shadow reports and allows' (DVG 'package.json') 0 'SHADOW'
+Set-Config $dvg '{"protectedBranches":["main"]}'
+$r = DVG 'package.json'
+if ($r.rc -eq 0 -and [string]::IsNullOrWhiteSpace($r.out)) { Write-Host 'PASS  depvuln: no config section, no-op and silent' }
+else { Write-Host "FAIL  depvuln: no config section, no-op and silent (exit $($r.rc), output: $($r.out))"; $script:failed++ }
+
 # ---- code-graph gate: any declaration form satisfies it ----
 $cg = New-TestRepo 'feature/graph'
 Set-Content -Path (Join-Path $cg 'big.ts') -Value (1..600 | ForEach-Object { "const x$_ = $_;" })
@@ -128,6 +155,41 @@ foreach ($form in @('{"codeGraph":{"recommendAtLoc":100,"requireAtLoc":200}}',
     if ($rc -eq $want) { Write-Host "PASS  codeGraph: $name" }
     else { Write-Host "FAIL  codeGraph: $name (exit $rc, expected $want): $out"; $script:failed++ }
 }
+
+# ---- report: same CLI, but the paths are Windows paths ----
+# The bash suite covers the counting rules. What is worth re-running here is
+# everything path-shaped: the manifest records hook files with backslashes on
+# this platform, and the silent-hook list is derived from those keys.
+$rp = New-TestRepo 'feature/report'
+node (Join-Path $root 'bin\discipline.mjs') init --target $rp --components hooks | Out-Null
+node (Join-Path $root 'bin\discipline.mjs') apply --target $rp | Out-Null
+Set-Config $rp '{"mode":"shadow","events":{"enabled":true,"path":".claude/discipline-events.jsonl"}}'
+
+$rlog = Join-Path $rp '.claude\discipline-events.jsonl'
+$lines = @()
+1..3 | ForEach-Object {
+    $lines += '{"ts":"2026-08-20T10:0' + $_ + ':00Z","asset":"dod-gate","event":"block","verdict":"fail","mode":"enforce","sessionId":"s-a","durationMs":4' + $_ + '000}'
+}
+1..12 | ForEach-Object {
+    $lines += '{"ts":"2026-08-21T09:' + $_.ToString('00') + ':00Z","asset":"secret-guard","event":"would-block","verdict":"fail","mode":"shadow","sessionId":"s-' + ($_ % 4) + '"}'
+}
+$lines += '{"ts":"2026-08-23T08:01:00Z","asset":"dod-ga'   # a session killed mid-write
+Set-Content -Path $rlog -Value $lines
+
+$out = (node (Join-Path $root 'bin\discipline.mjs') report --target $rp 2>&1) -join "`n"
+$rc = $LASTEXITCODE
+function Assert-Report([string]$name, [string]$needle) {
+    if ($out -match [regex]::Escape($needle)) { Write-Host "PASS  report: $name" }
+    else { Write-Host "FAIL  report: $name (not in output: $out)"; $script:failed++ }
+}
+if ($rc -eq 0) { Write-Host 'PASS  report: exits 0 on a readable log' }
+else { Write-Host "FAIL  report: exits 0 on a readable log (exit $rc)"; $script:failed++ }
+Assert-Report 'applied but silent hooks are listed, from backslash manifest keys' 'silent in this window'
+Assert-Report 'block-protected-branch is among them' 'block-protected-branch'
+Assert-Report 'a truncated line is reported, not eaten' 'could not be parsed'
+Assert-Report 'cost percentiles survive the path round-trip' 'p50 42000ms'
+Assert-Report 'enough would-blocks to sample' 'secret-guard: 12 would-block'
+Assert-Report 'says what the log cannot tell you' 'does not record whether firing'
 
 # ---- CRLF must not read as drift ----
 # A target repo with core.autocrlf=true rewrites vendored .sh copies to CRLF.
