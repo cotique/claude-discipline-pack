@@ -47,27 +47,78 @@ assert() { # name expect_rc [expect_out_substr]
 #     nothing. That is how the original version of this test came to pass on a
 #     failed `source` rather than on the guard it claims to exercise.
 NOJQ_SKIP=""
-mask_jq() { # -> echoes a PATH value where jq is unavailable, or empty if impossible
-  local t p d probe
-  # Cheapest and most faithful: drop the directory jq lives in. Works when jq has
-  # its own bin dir (common on Windows); useless when it shares /usr/bin with
-  # coreutils, which is the normal Linux layout.
-  local jqdir; jqdir=$(dirname "$(command -v jq)")
-  probe=$(printf '%s' "$PATH" | tr ':' '
+MASK_JQ_PATH=""; MASK_JQ_WHY=""
+mask_jq() { # -> sets MASK_JQ_PATH (empty if impossible) and MASK_JQ_WHY (the reason)
+  local t p d dir probe prev jqbin jqdir n cap
+  # Globals rather than stdout: the reason has to reach the SKIP message, and a
+  # `masked=$(mask_jq)` command substitution runs in a subshell, so anything set
+  # in here would be discarded and every skip would report the generic fallback.
+  MASK_JQ_PATH=""; MASK_JQ_WHY=""
+  # Cheapest and most faithful: drop every directory a jq is reachable in. Works
+  # when jq has its own bin dir (common on Windows); useless when it shares
+  # /usr/bin with coreutils, which is the normal Linux layout.
+  # Dropping only the first such directory is not enough, and that is what sent
+  # Git Bash into the mirror branch below: one machine had three jq copies on
+  # PATH (~/bin, listed twice, plus a WinGet package dir), so `command -v jq`
+  # still found one and the probe rejected a branch that would have worked.
+  probe="$PATH"
+  while jqbin=$(PATH="$probe" command -v jq 2>/dev/null); [ -n "$jqbin" ]; do
+    jqdir=$(dirname "$jqbin"); prev="$probe"
+    probe=$(printf '%s' "$probe" | tr ':' '
 ' | grep -vxF "$jqdir" | paste -sd: -)
+    # jq reachable through a PATH entry spelled differently than its dirname
+    # (trailing slash, relative entry). Removing nothing would spin here.
+    [ "$probe" = "$prev" ] && break
+    [ -n "$probe" ] || break
+  done
   if [ -n "$probe" ] && ! PATH="$probe" command -v jq >/dev/null 2>&1 &&
      [ -n "$(PATH="$probe" dirname /a/b 2>/dev/null)" ]; then
-    printf '%s' "$probe"; return 0
+    MASK_JQ_PATH="$probe"; return 0
   fi
   # Otherwise mirror every executable on PATH except jq. Naming the tools a hook
   # needs was tried first and is a losing game: the list silently goes stale the
   # moment a hook calls one more utility, and the test then fails for a reason
   # that has nothing to do with the code under test (it failed on `tail`).
-  # On Git Bash this branch is unusable anyway — `ln -sf` copies the binary and
-  # the copy cannot find msys-2.0.dll — hence the probe before trusting it.
+  #
+  # This branch costs one filesystem entry per executable on PATH, so it has to
+  # be refused before it is attempted, not abandoned partway: attempting it on
+  # the wrong machine hangs rather than errors. Two measured ways it goes wrong,
+  # cheapest check first:
   d=$(mktemp -d)
-  printf '%s' "$PATH" | tr ':' '
-' | while IFS= read -r dir; do
+  #   1. `ln -sf` copies instead of linking (Git Bash): 0.17s and 4.3MB per
+  #      executable, and the copy cannot find msys-2.0.dll so the mirrored tools
+  #      silently return nothing anyway. One probe settles it.
+  : > "$d/lnsrc"
+  if ! ln -sf "$d/lnsrc" "$d/lnprobe" 2>/dev/null || [ ! -L "$d/lnprobe" ]; then
+    rm -rf "$d"
+    MASK_JQ_WHY="ln -sf copies instead of symlinking here, so a mirrored PATH would be neither cheap nor runnable"
+    return 0
+  fi
+  rm -f "$d/lnsrc" "$d/lnprobe"
+  #   2. PATH is simply enormous even where symlinks work. Measured on one
+  #      Windows box: ~24,000 executables, C:\Windows\system32 alone holding
+  #      4,836 and appearing on PATH four times. Counting stops at the cap, so
+  #      the check cannot itself become the stall it exists to prevent. The cap
+  #      sits far above any ordinary Linux PATH, which is where these cases are
+  #      meant to run; if it ever does trip on CI the result is a loud SKIP
+  #      naming the count, never a silent pass.
+  n=0; cap=8000
+  while IFS= read -r dir; do
+    [ -d "$dir" ] || continue
+    for p in "$dir"/*; do [ -x "$p" ] || continue; n=$((n + 1)); done
+    [ "$n" -gt "$cap" ] && break
+  done <<< "${PATH//:/$'\n'}"
+  if [ "$n" -gt "$cap" ]; then
+    rm -rf "$d"
+    MASK_JQ_WHY="PATH holds more than $cap executables; mirroring them all would outlast the test"
+    return 0
+  fi
+  # Here-string, not `printf | tr | while read`: printf emits no trailing newline,
+  # so read hits EOF on the final entry and returns non-zero with the body never
+  # running. That silently dropped the last PATH directory from the mirror, which
+  # is precisely how this branch produces a failure that looks unrelated to the
+  # code under test.
+  while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     for p in "$dir"/*; do
       [ -x "$p" ] || continue
@@ -75,11 +126,12 @@ mask_jq() { # -> echoes a PATH value where jq is unavailable, or empty if imposs
       [ "$t" = jq ] && continue
       [ -e "$d/$t" ] || ln -sf "$p" "$d/$t" 2>/dev/null
     done
-  done
+  done <<< "${PATH//:/$'\n'}"
   if [ -n "$(PATH="$d" dirname /a/b 2>/dev/null)" ] && ! PATH="$d" command -v jq >/dev/null 2>&1; then
-    printf '%s' "$d"
+    MASK_JQ_PATH="$d"
   else
     rm -rf "$d"
+    MASK_JQ_WHY="a mirrored PATH came out unusable in this environment"
   fi
 }
 run_nojq() { # payload proj [hook=dod-gate.sh] -> sets RC, OUT; NOJQ_SKIP if it cannot run
@@ -89,8 +141,8 @@ run_nojq() { # payload proj [hook=dod-gate.sh] -> sets RC, OUT; NOJQ_SKIP if it 
     OUT=$(printf '%s' "$1" | CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/$hook" 2>&1); RC=$?
     return 0
   fi
-  local masked; masked=$(mask_jq)
-  if [ -z "$masked" ]; then NOJQ_SKIP="cannot make jq unavailable in this environment"; RC=0; OUT=""; return 0; fi
+  local masked; mask_jq; masked="$MASK_JQ_PATH"
+  if [ -z "$masked" ]; then NOJQ_SKIP="${MASK_JQ_WHY:-cannot make jq unavailable in this environment}"; RC=0; OUT=""; return 0; fi
   OUT=$(printf '%s' "$1" | PATH="$masked" CLAUDE_PROJECT_DIR="$2" "$bash_bin" "$hooks/$hook" 2>&1); RC=$?
   case "$masked" in /tmp/*|"${TMPDIR:-/tmp}"/*) rm -rf "$masked" ;; esac
 }
