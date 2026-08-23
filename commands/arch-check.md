@@ -40,6 +40,13 @@ Rules:
   verdict, one line: *"this is wrong if ___"* — then check that before
   presenting. A claim with no falsifier drifts toward whatever the human last
   objected to.
+- **Simplicity first.** The proposed approach is the minimum that solves the
+  stated problem. No speculative features, no abstractions for single-use
+  code, no "flexibility" or "configurability" that wasn't asked for.
+- **Surgical changes.** The files-to-touch list contains only what the
+  feature requires. Don't propose refactoring, reformatting, or "improving"
+  adjacent code that isn't broken — cleanup scope is limited to the mess this
+  feature itself would make.
 
 ## Evidence tiers
 
