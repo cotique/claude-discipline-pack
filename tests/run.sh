@@ -268,6 +268,59 @@ set_config "$fmt" '{"format":{"*.ts":"true"}}'
 run_hook format-postcheck.sh '{"tool_input":{"file_path":"/x/app.module.ts"}}' "$fmt"; assert 'format: clean file passes' 0
 run_hook format-postcheck.sh '{"tool_input":{"file_path":"/x/README.md"}}' "$fmt";     assert 'format: non-matching ignored' 0
 
+# ---- pre-push: a branch name from the generator must not land ----
+# Same remote and repo as above, so these are real pushes too. The cases that
+# matter are the two refusals this gate must NOT make: a hand-written name that
+# happens to end in hex, and the deletion that is the remedy for a name already
+# pushed.
+set_config "$pp" '{"protectedBranches":["main"],"events":{"enabled":true}}'
+git -C "$pp" checkout -q -b claude/some-work-49196d
+echo n >> "$pp/a.txt"; git -C "$pp" -c user.email=t@t.t -c user.name=t commit -qam n
+pp_try 'generator-named branch is refused'  refused push origin claude/some-work-49196d
+out=$(git -C "$pp" push origin claude/some-work-49196d 2>&1)
+if printf '%s' "$out" | grep -q 'git branch -m claude/some-work-49196d'; then
+  echo 'PASS  pre-push: the refusal spells out the rename'
+else echo "FAIL  pre-push: refusal without the rename command: $out"; failed=$((failed + 1)); fi
+
+# The false positives this gate must not produce. A hex-looking suffix on a name
+# somebody typed is not the generator's signature; the prefix is half the pattern.
+git -C "$pp" checkout -q -b fix/issue-abc123
+echo h >> "$pp/a.txt"; git -C "$pp" -c user.email=t@t.t -c user.name=t commit -qam h
+pp_try 'a hand-written hex-ish name passes'  allowed push origin fix/issue-abc123
+git -C "$pp" checkout -q -b claude/named-by-hand
+echo c >> "$pp/a.txt"; git -C "$pp" -c user.email=t@t.t -c user.name=t commit -qam c
+pp_try 'claude/ without a hex suffix passes' allowed push origin claude/named-by-hand
+
+# The off switch has to work, and it has to survive jq's alternative operator:
+# `.branchNames.enabled // true` would read false as absent and keep the gate on.
+set_config "$pp" '{"protectedBranches":["main"],"branchNames":{"enabled":false},"events":{"enabled":true}}'
+pp_try 'enabled=false lets the name through'  allowed push origin claude/some-work-49196d
+
+# Deleting such a branch is the remedy. A gate that blocks its own remedy is a
+# trap, so deletions skip the check even with the gate back on.
+set_config "$pp" '{"protectedBranches":["main"],"events":{"enabled":true}}'
+pp_try 'deleting a generator-named branch passes' allowed push origin :claude/some-work-49196d
+
+# A project that spells its generator differently configures the pattern.
+set_config "$pp" '{"protectedBranches":["main"],"branchNames":{"rejectPattern":"^wip/","convention":"topic/<what>"},"events":{"enabled":true}}'
+git -C "$pp" checkout -q -b wip/whatever
+echo w >> "$pp/a.txt"; git -C "$pp" -c user.email=t@t.t -c user.name=t commit -qam w
+pp_try 'a configured pattern is honoured'     refused push origin wip/whatever
+pp_try 'and the built-in default is replaced' allowed push origin claude/some-work-49196d
+out=$(git -C "$pp" push origin wip/whatever 2>&1)
+if printf '%s' "$out" | grep -q 'topic/<what>'; then
+  echo 'PASS  pre-push: the configured convention is printed'
+else echo "FAIL  pre-push: convention not printed: $out"; failed=$((failed + 1)); fi
+
+# Shadow mode, same escape hatch as every other gate.
+set_config "$pp" '{"mode":"shadow","protectedBranches":["main"],"events":{"enabled":true}}'
+git -C "$pp" checkout -q -b claude/shadow-name-a1b2c3
+echo sh >> "$pp/a.txt"; git -C "$pp" -c user.email=t@t.t -c user.name=t commit -qam sh
+out=$(git -C "$pp" push origin claude/shadow-name-a1b2c3 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q SHADOW; then
+  echo 'PASS  pre-push: shadow allows a generator name and reports it'
+else echo "FAIL  pre-push: shadow name (rc=$rc): $out"; failed=$((failed + 1)); fi
+
 # ---- dep-vuln-guard ----
 # Every case here maps to a real property of the three tools this hook is meant
 # to wrap. The fourth is the important one: `dotnet list package --vulnerable`

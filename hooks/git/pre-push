@@ -21,7 +21,8 @@
 # stdin: one line per ref being pushed
 # exit 0: allow    exit non-zero: git aborts the push
 #
-# config: .claude/discipline.json — protectedBranches, blockAllPush, mode, events
+# config: .claude/discipline.json — protectedBranches, blockAllPush, branchNames,
+#         mode, events
 # deps:   git. jq only for reading config; without it the built-in defaults apply.
 
 set -u
@@ -40,14 +41,36 @@ command -v disc_log  >/dev/null 2>&1 || disc_log() { :; }
 config="$proj/.claude/discipline.json"
 branches=""
 block_all_push=""
+name_reject=""
+name_convention=""
+names_off=""
 if [ -f "$config" ] && command -v jq >/dev/null 2>&1; then
   branches=$(jq -r '.protectedBranches[]?' "$config" 2>/dev/null | tr -d '\r')
   block_all_push=$(jq -r 'if .blockAllPush then "1" else "" end' "$config" 2>/dev/null | tr -d '\r')
+  name_reject=$(jq -r '.branchNames.rejectPattern // empty' "$config" 2>/dev/null | tr -d '\r')
+  name_convention=$(jq -r '.branchNames.convention // empty' "$config" 2>/dev/null | tr -d '\r')
+  # `// true` would be wrong: jq's alternative operator treats false the same as
+  # absent, so "enabled": false would read as enabled. Compare explicitly.
+  names_off=$(jq -r 'if .branchNames.enabled == false then "1" else "" end' "$config" 2>/dev/null | tr -d '\r')
 fi
 [ -z "$branches" ] && branches='main
 master
 develop
 release/*'
+
+# A name from the worktree generator is not a name. `claude/xenodochial-wu-e77d45`
+# says nothing about the work, and once pushed it is in every clone and in the
+# branch list for good: fixing it afterwards means a rename, a second push and a
+# remote deletion, done from memory, usually weeks later. Before the push the fix
+# is two commands, which is why this belongs here and not in a style guide.
+#
+# Deliberately narrow. The default matches a prefix AND a trailing hex suffix,
+# because that pair is the generator's signature and not a shape anyone types by
+# hand — `fix/issue-abc123` must not trip it. This gate cannot tell an intended
+# name from an accidental one, and a blocking layer that fires on a name somebody
+# chose costs a session, so it errs toward letting odd names through.
+[ -z "$name_reject" ] && name_reject='^claude/.*-[0-9a-f]{6,}$'
+[ -z "$name_convention" ] && name_convention='feat/<what-it-adds>, fix/<what-it-fixes>, chore/<what>'
 
 # Split on newlines with IFS rather than piping into a `while`. The pipeline version
 # put the loop in a subshell, so a match exited the subshell with 0, the `&&` after
@@ -64,7 +87,7 @@ is_protected() {  # $1 = branch name
   return 1
 }
 
-refuse() {  # $1 = reason
+refuse() {  # $1 = reason, $2 = advice (optional; the protected-branch wording by default)
   if [ "$(disc_mode)" = "shadow" ]; then
     disc_log pre-push would-block fail "$1"
     echo "[pre-push] SHADOW (not enforced): $1" >&2
@@ -73,7 +96,14 @@ refuse() {  # $1 = reason
   disc_log pre-push block fail "$1"
   echo "[pre-push] REFUSED: $1" >&2
   echo "This is git refusing the push, not a text heuristic — the ref above is what" >&2
-  echo "would actually have been written. Push a feature branch, or ask the owner." >&2
+  echo "would actually have been written." >&2
+  # Every refusal has to name the way forward. A gate that only says no gets
+  # worked around with --no-verify, and then it is not a gate.
+  if [ -n "${2:-}" ]; then
+    printf '%s\n' "$2" >&2   # advice for this refusal
+  else
+    echo "Push a feature branch, or ask the owner." >&2
+  fi
   exit 1
 }
 
@@ -114,6 +144,18 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     else
       refuse "protected branch '$branch' on $1 (ref $remote_ref)"
     fi
+    continue
+  fi
+
+  # Named by the generator, not chosen. Skipped for deletions on purpose: removing
+  # such a branch is the remedy, and a gate that blocks its own remedy is a trap.
+  if [ -z "$names_off" ] && [ "$local_sha" != "$zero" ] &&
+     printf '%s' "$branch" | grep -Eq -e "$name_reject"; then
+    refuse "branch name '$branch' comes from the worktree generator, not from you" \
+"Rename it before it lands — after the push it is in every clone:
+  git branch -m $branch <new-name>
+  git push -u origin <new-name>
+Convention here: $name_convention"
     continue
   fi
 
