@@ -83,6 +83,17 @@ A gated workflow — each command is a phase with hard boundaries:
 | `/orchestrate <feature>` | Design-for-delegation | Produces a self-contained worker prompt instead of implementing |
 | `/stuck` | Circuit breaker | No fixes. Diagnose, present options with tradeoffs, wait for a human |
 
+Operational commands, outside the build workflow. Each is a sequence performed a
+handful of times, always the same way, and each loses a step the moment it is
+performed from memory — and nothing reports the loss, because every part that
+ran succeeded:
+
+| Command | Does | Hard rule |
+|---|---|---|
+| `/release <version>` | Cut and publish a version | Never tags a build that is not green **for that exact SHA**; publication is confirmed from outside the pipeline, not from its exit code |
+| `/bump-dependency <name> <version>` | Move onto a new version of a dependency | A green build is not a green upgrade — it must be run against clean state, and the docs reconciled in the same change |
+| `/cleanup` | Find what the work left behind | Enumerates with the evidence that each item is safe, removes only what the human confirms, and never on a name |
+
 ### Hooks (`hooks/bash/`, `hooks/powershell/` — functional twins)
 
 | Hook | Event | Behavior |
