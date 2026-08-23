@@ -1,5 +1,28 @@
 # Plan: additions from external feedback (2026-08-23)
 
+## Status (2026-08-23)
+
+Built in the order the pack owner set — 2, 1, 4, 3:
+
+- **§2 skill evals** — three scenarios hand-authored against real past defects
+  (`scenarios/`), the format changed in three places by what those cases forced
+  (see the spec's "What authoring these scenarios changed"), and
+  `commands/eval-skill.md`. No runner code: the command drives it, like every
+  other command here.
+- **§1 production debugging** — `commands/debug-incident.md`. The open question
+  (which observability tool to assume) is answered by assuming none:
+  `discipline.json` gains an `observability` section shaped like `codeGraph`.
+- **§4a dependency scan** — `hooks/{bash,powershell}/dep-vuln-guard.sh|ps1`,
+  registered in both settings examples, nine tests per suite.
+- **§4b event report** — `discipline report`, with the graduation view and an
+  explicit statement of what the log cannot tell you.
+- **§3 TDD enforcement** — `commands/tdd-implement.md`.
+
+Not done, and deliberately: no version bump or release notes — that is a
+release decision, not part of building these.
+
+---
+
 Four items, in priority order set by the pack owner. Each section states what
 already exists (verified by reading the actual files, not assumed from the
 README), what is genuinely missing, and what to build.

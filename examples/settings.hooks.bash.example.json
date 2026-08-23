@@ -32,6 +32,17 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/format-postcheck.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/dep-vuln-guard.sh\"",
+            "timeout": 150
+          }
+        ],
+        "$comment": "dep-vuln-guard runs the ecosystem's own audit tool when a dependency manifest changes. Keep this timeout ABOVE depVuln.timeoutSeconds (default 120): if the harness kills the hook first, its \"the audit did not finish\" verdict is never written and a hung registry reads as a clean tree. No depVuln section in discipline.json = no-op."
       }
     ],
     "UserPromptSubmit": [
