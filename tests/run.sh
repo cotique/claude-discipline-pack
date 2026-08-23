@@ -259,6 +259,53 @@ for form in '{"codeGraph":{"recommendAtLoc":100,"requireAtLoc":200}}'           
   else echo "FAIL  codeGraph: $label (exit $rc, expected $want): $out"; failed=$((failed+1)); fi
 done
 
+# ---- report: the event log turned into the questions it was collected for ----
+# The two numbers that decide a gate's fate — would-blocks and cost — plus the
+# two ways this report can lie: counting a truncated log as a quiet one, and
+# presenting would-blocks as if they were correct blocks.
+rp=$(new_repo feature/report)
+node "$root/bin/discipline.mjs" init --target "$rp" --components hooks >/dev/null
+node "$root/bin/discipline.mjs" apply --target "$rp" >/dev/null   # the silent-hook list reads the applied manifest
+set_config "$rp" '{"mode":"shadow","events":{"enabled":true,"path":".claude/discipline-events.jsonl"}}'
+
+out=$(node "$root/bin/discipline.mjs" report --target "$rp" 2>&1)
+if printf '%s' "$out" | grep -q 'no event log'; then echo 'PASS  report: absent log is named, not implied'
+else echo "FAIL  report: absent log is named, not implied ($out)"; failed=$((failed+1)); fi
+
+rlog="$rp/.claude/discipline-events.jsonl"
+{
+  for i in 1 2 3; do
+    echo "{\"ts\":\"2026-08-20T10:0${i}:00Z\",\"asset\":\"dod-gate\",\"event\":\"block\",\"verdict\":\"fail\",\"mode\":\"enforce\",\"sessionId\":\"s-a\",\"durationMs\":4${i}000}"
+  done
+  for i in $(seq 1 12); do
+    echo "{\"ts\":\"2026-08-21T09:$(printf %02d "$i"):00Z\",\"asset\":\"secret-guard\",\"event\":\"would-block\",\"verdict\":\"fail\",\"mode\":\"shadow\",\"sessionId\":\"s-$((i % 4))\"}"
+  done
+  echo '{"ts":"2026-08-22T12:01:00Z","asset":"dep-vuln-guard","event":"would-block","verdict":"fail","mode":"shadow","sessionId":"s-x"}'
+  # A session killed mid-write leaves exactly this.
+  printf '{"ts":"2026-08-23T08:01:00Z","asset":"dod-ga\n'
+} > "$rlog"
+
+out=$(node "$root/bin/discipline.mjs" report --target "$rp" 2>&1); rc=$?
+check_report() { # label pattern
+  if printf '%s' "$out" | grep -q "$2"; then echo "PASS  report: $1"
+  else echo "FAIL  report: $1 (not in output: $out)"; failed=$((failed+1)); fi
+}
+[ "$rc" -eq 0 ] && echo 'PASS  report: exits 0 on a readable log' || { echo "FAIL  report: exits 0 on a readable log (exit $rc)"; failed=$((failed+1)); }
+check_report 'counts the events it could parse'        '16 event(s) of 17 line(s)'
+check_report 'a truncated line is reported, not eaten' 'could not be parsed'
+check_report 'cost percentiles for a timed gate'       'p50 42000ms'
+check_report 'enough would-blocks to sample'           'secret-guard: 12 would-block'
+check_report 'too few to conclude anything'            'too few to estimate'
+check_report 'names sessions to read before enforcing' 'sample these sessions'
+check_report 'says what the log cannot tell you'       'does not record whether firing'
+check_report 'applied but silent hooks are listed'     'silent in this window'
+
+out=$(node "$root/bin/discipline.mjs" report --target "$rp" --since 2026-08-22 2>&1)
+check_report 'window filters older events'             '1 event(s) of 17 line(s)'
+out=$(node "$root/bin/discipline.mjs" report --target "$rp" --since nonsense 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'wants Nd'; then echo 'PASS  report: an unparseable window is refused, not ignored'
+else echo "FAIL  report: an unparseable window is refused, not ignored (exit $rc): $out"; failed=$((failed+1)); fi
+
 # ---- CRLF must not read as drift ----
 crlf=$(new_repo feature/crlf)
 node "$root/bin/discipline.mjs" init --target "$crlf" --components hooks >/dev/null

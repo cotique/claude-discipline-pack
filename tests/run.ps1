@@ -156,6 +156,41 @@ foreach ($form in @('{"codeGraph":{"recommendAtLoc":100,"requireAtLoc":200}}',
     else { Write-Host "FAIL  codeGraph: $name (exit $rc, expected $want): $out"; $script:failed++ }
 }
 
+# ---- report: same CLI, but the paths are Windows paths ----
+# The bash suite covers the counting rules. What is worth re-running here is
+# everything path-shaped: the manifest records hook files with backslashes on
+# this platform, and the silent-hook list is derived from those keys.
+$rp = New-TestRepo 'feature/report'
+node (Join-Path $root 'bin\discipline.mjs') init --target $rp --components hooks | Out-Null
+node (Join-Path $root 'bin\discipline.mjs') apply --target $rp | Out-Null
+Set-Config $rp '{"mode":"shadow","events":{"enabled":true,"path":".claude/discipline-events.jsonl"}}'
+
+$rlog = Join-Path $rp '.claude\discipline-events.jsonl'
+$lines = @()
+1..3 | ForEach-Object {
+    $lines += '{"ts":"2026-08-20T10:0' + $_ + ':00Z","asset":"dod-gate","event":"block","verdict":"fail","mode":"enforce","sessionId":"s-a","durationMs":4' + $_ + '000}'
+}
+1..12 | ForEach-Object {
+    $lines += '{"ts":"2026-08-21T09:' + $_.ToString('00') + ':00Z","asset":"secret-guard","event":"would-block","verdict":"fail","mode":"shadow","sessionId":"s-' + ($_ % 4) + '"}'
+}
+$lines += '{"ts":"2026-08-23T08:01:00Z","asset":"dod-ga'   # a session killed mid-write
+Set-Content -Path $rlog -Value $lines
+
+$out = (node (Join-Path $root 'bin\discipline.mjs') report --target $rp 2>&1) -join "`n"
+$rc = $LASTEXITCODE
+function Assert-Report([string]$name, [string]$needle) {
+    if ($out -match [regex]::Escape($needle)) { Write-Host "PASS  report: $name" }
+    else { Write-Host "FAIL  report: $name (not in output: $out)"; $script:failed++ }
+}
+if ($rc -eq 0) { Write-Host 'PASS  report: exits 0 on a readable log' }
+else { Write-Host "FAIL  report: exits 0 on a readable log (exit $rc)"; $script:failed++ }
+Assert-Report 'applied but silent hooks are listed, from backslash manifest keys' 'silent in this window'
+Assert-Report 'block-protected-branch is among them' 'block-protected-branch'
+Assert-Report 'a truncated line is reported, not eaten' 'could not be parsed'
+Assert-Report 'cost percentiles survive the path round-trip' 'p50 42000ms'
+Assert-Report 'enough would-blocks to sample' 'secret-guard: 12 would-block'
+Assert-Report 'says what the log cannot tell you' 'does not record whether firing'
+
 # ---- CRLF must not read as drift ----
 # A target repo with core.autocrlf=true rewrites vendored .sh copies to CRLF.
 # Byte hashing called that drift forever; content hashing must not.
