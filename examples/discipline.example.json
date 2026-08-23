@@ -111,5 +111,13 @@
     "defaultBranch": "main",
     "containerLabel": "com.docker.compose.project=my-service",
     "scratchPaths": [".scratch", "tmp/"]
+  },
+
+  "branchNames": {
+    "$comment": "pre-push: refuse a branch whose name came from the worktree generator rather than from a person. On by default — the cost is asymmetric: before the push the fix is two commands, after it the name is in every clone and in the branch list for good. Set enabled=false to turn it off.",
+    "$commentPattern": "The default is deliberately narrow: a prefix AND a trailing hex suffix, which together are the generator's signature and not a shape anyone types by hand — `fix/issue-abc123` must not trip it. This gate cannot tell an intended name from an accidental one, and a blocking layer that fires on a name somebody chose costs a session, so it errs toward letting odd names through. Override it if your tooling spells them differently.",
+    "rejectPattern": "^claude/.*-[0-9a-f]{6,}$",
+    "$commentConvention": "Printed verbatim in the refusal. A gate that only says no gets worked around with --no-verify, and then it is not a gate.",
+    "convention": "feat/<what-it-adds>, fix/<what-it-fixes>, chore/<what>"
   }
 }
