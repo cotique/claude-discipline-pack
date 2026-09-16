@@ -259,7 +259,7 @@ function check(opts) {
   const cmdDir = path.join(target, '.claude', 'commands');
   if (fs.existsSync(cmdDir)) {
     for (const f of fs.readdirSync(cmdDir)) {
-      const rel = path.join('.claude', 'commands', f);
+      const rel = ['.claude', 'commands', f].join('/'); // manifest keys are always forward-slash (destRel), even on win32
       if (f.endsWith('.md') && reserved.has(path.basename(f, '.md')) && !tracked.has(rel)) {
         err(`reserved-name collision: ${rel} shadows a pack command — rename the overlay`);
       }
